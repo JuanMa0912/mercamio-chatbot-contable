@@ -18,6 +18,17 @@ secrets/
 n8n-credentials*.json
 credenciales*.json
 
+# Claves de cuenta de servicio de Google. Dan acceso permanente a la hoja y no
+# caducan; lo correcto es guardarlas fuera del repositorio, pero si alguna acaba
+# aqui por error no debe aparecer siquiera como archivo sin seguimiento.
+*service-account*.json
+*-sa.json
+# Google descarga la clave con el nombre <proyecto>-<hash>.json. Ningun
+# patron atrapa un nombre arbitrario: la proteccion real es el hook de
+# pre-commit, que detecta la cabecera PEM venga en el archivo que venga.
+mercamio-chatbot-*.json
+.secretos/
+
 # ───────────── Datos locales de n8n / Docker ─────────────
 data/
 volumes/

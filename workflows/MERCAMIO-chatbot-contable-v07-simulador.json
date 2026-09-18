@@ -72,6 +72,7 @@
     },
     {
       "parameters": {
+        "authentication": "serviceAccount",
         "operation": "append",
         "documentId": {
           "__rl": true,
@@ -283,12 +284,17 @@
         440,
         -100
       ],
-      "disabled": true,
+      "credentials": {
+        "googleApi": {
+          "id": "mercamioSheets01",
+          "name": "MERCAMIO Google Sheets"
+        }
+      },
       "onError": "continueRegularOutput",
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000,
-      "notes": "Deshabilitado en el simulador: permite probar el flujo completo sin credenciales de Google."
+      "notes": "Requiere la cuenta de servicio (scripts/crear-credencial-sheets.ps1) y MERCAMIO_SHEET_ID. La hoja debe llamarse \"Solicitudes\" y estar compartida como Editor con el correo del service account."
     },
     {
       "parameters": {

@@ -34,6 +34,31 @@ if (CHAT_HTML.includes('{{')) {
 
 const NOMBRE_MOTOR = 'Motor conversacional - 9 rutas';
 
+// Lee una clave de .env en tiempo de BUILD. El build corre en el host, donde
+// .env no esta cargado en el entorno, asi que hay que leer el archivo. Se usa
+// solo para decisiones de forma del workflow, nunca para secretos: los valores
+// sensibles los resuelve n8n en ejecucion con {{ $env.X }}.
+const leerEnv = (clave, porDefecto = '') => {
+  let contenido;
+  try {
+    contenido = leer('.env');
+  } catch {
+    return porDefecto;
+  }
+  for (const linea of contenido.split(/\r?\n/)) {
+    const m = linea.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (m && m[1] === clave) return m[2].trim().replace(/^["']|["']$/g, '');
+  }
+  return porDefecto;
+};
+
+// Por defecto el simulador NO escribe en Sheets: asi se prueba la conversacion
+// sin ninguna credencial de Google. Poniendo MERCAMIO_SIM_SHEETS=true en .env
+// el nodo queda activo tambien en el simulador, que es la unica forma de
+// validar que los tickets llegan de verdad a la hoja SIN depender de WhatsApp.
+// Probar Sheets y WhatsApp a la vez significa dos incognitas en el mismo fallo.
+const SIM_ESCRIBE_EN_SHEETS = leerEnv('MERCAMIO_SIM_SHEETS').toLowerCase() === 'true';
+
 // IDs fijos de las credenciales que crea scripts/crear-credenciales-whatsapp.ps1.
 // Referenciarlas aqui evita tener que asignarlas a mano en la interfaz cada vez
 // que se reimporta el workflow. Si no existen todavia, n8n muestra el nodo con
@@ -42,6 +67,22 @@ const NOMBRE_MOTOR = 'Motor conversacional - 9 rutas';
 // que un workflow que parece activo y no escucha.
 const CRED_WA_ENVIAR = { id: 'mercamioWaApi001', name: 'MERCAMIO WhatsApp - enviar' };
 const CRED_WA_RECIBIR = { id: 'mercamioWaTrg001', name: 'MERCAMIO WhatsApp - recibir' };
+
+// Credencial de Google Sheets: CUENTA DE SERVICIO, no OAuth2.
+//
+// MERCAMIO no usa Google Workspace, asi que una app OAuth solo puede tener la
+// pantalla de consentimiento en modo Externo. En estado "Testing" Google caduca
+// el refresh token a los 7 dias, y como este nodo lleva onError
+// 'continueRegularOutput' el bot seguiria entregando numeros de ticket sin
+// escribir nada en la hoja: un fallo silencioso una semana despues de arrancar.
+//
+// Una cuenta de servicio firma su propio JWT: no caduca, no tiene pantalla de
+// consentimiento y no depende de ninguna URI de redireccion. Eso ultimo evita
+// ademas el choque con scripts/tunel-rapido.ps1, que reescribe WEBHOOK_URL y
+// con ella N8N_EDITOR_BASE_URL, de donde n8n deriva el callback de OAuth.
+//
+// La crea scripts/crear-credencial-sheets.ps1 a partir del JSON de la clave.
+const CRED_SHEETS = { id: 'mercamioSheets01', name: 'MERCAMIO Google Sheets' };
 
 // ---------------------------------------------------------------- nodos base
 const nodoMotor = (pos) => ({
@@ -83,6 +124,8 @@ const nodoIf = (pos) => ({
 
 const nodoSheets = (pos, deshabilitado) => ({
   parameters: {
+    // Sin esta linea el nodo asume OAuth2 y reclama una credencial que no existe.
+    authentication: 'serviceAccount',
     operation: 'append',
     documentId: {
       __rl: true,
@@ -138,6 +181,7 @@ const nodoSheets = (pos, deshabilitado) => ({
   type: 'n8n-nodes-base.googleSheets',
   typeVersion: 4.7,
   position: pos,
+  credentials: { googleApi: CRED_SHEETS },
   ...(deshabilitado ? { disabled: true } : {}),
   // Si Sheets falla (cuota, permisos, red) el usuario DEBE recibir igual su
   // numero de ticket. El error queda en el log de ejecuciones para reproceso.
@@ -147,7 +191,7 @@ const nodoSheets = (pos, deshabilitado) => ({
   waitBetweenTries: 2000,
   notes: deshabilitado
     ? 'Deshabilitado en el simulador: permite probar el flujo completo sin credenciales de Google.'
-    : 'Requiere credencial Google Sheets OAuth2 y la variable MERCAMIO_SHEET_ID. La hoja debe llamarse "Solicitudes".',
+    : 'Requiere la cuenta de servicio (scripts/crear-credencial-sheets.ps1) y MERCAMIO_SHEET_ID. La hoja debe llamarse "Solicitudes" y estar compartida como Editor con el correo del service account.',
 });
 
 const nodoRecuperar = (pos) => ({
@@ -266,7 +310,7 @@ const workflowSimulador = {
     },
     nodoMotor([0, 0]),
     nodoIf([220, 0]),
-    nodoSheets([440, -100], true),
+    nodoSheets([440, -100], !SIM_ESCRIBE_EN_SHEETS),
     nodoRecuperar([660, -100]),
     {
       parameters: { respondWith: 'json', responseBody: '={{ { "respuesta": $json.output, "accion": $json.action, "estado": $json.estado_sesion, "ruta": $json.ruta, "ticket": $json.ticket } }}', options: {} },

@@ -80,6 +80,7 @@
     },
     {
       "parameters": {
+        "authentication": "serviceAccount",
         "operation": "append",
         "documentId": {
           "__rl": true,
@@ -291,11 +292,17 @@
         440,
         -100
       ],
+      "credentials": {
+        "googleApi": {
+          "id": "mercamioSheets01",
+          "name": "MERCAMIO Google Sheets"
+        }
+      },
       "onError": "continueRegularOutput",
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000,
-      "notes": "Requiere credencial Google Sheets OAuth2 y la variable MERCAMIO_SHEET_ID. La hoja debe llamarse \"Solicitudes\"."
+      "notes": "Requiere la cuenta de servicio (scripts/crear-credencial-sheets.ps1) y MERCAMIO_SHEET_ID. La hoja debe llamarse \"Solicitudes\" y estar compartida como Editor con el correo del service account."
     },
     {
       "parameters": {
