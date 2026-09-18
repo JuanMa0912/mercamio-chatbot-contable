@@ -525,6 +525,56 @@ else {
     }
 }
 
+# ------------------------------- 4b. la WABA entrega a ESTA app?
+#
+# Son DOS suscripciones distintas y hacen falta las dos:
+#
+#   /{app-id}/subscriptions     la app dice "mi webhook esta en esta URL"
+#   /{waba-id}/subscribed_apps  la WABA dice "mis eventos van a esta app"
+#
+# La seccion 4 comprueba la primera. Sin la SEGUNDA, Meta recibe los mensajes y
+# los enruta a la app que si este suscrita: en una cuenta recien creada suele
+# ser "WA DevX Webhook Events 1P App", la app interna que alimenta el panel de
+# pruebas de Webhooks.
+#
+# Es el fallo mas desconcertante de todos porque no se parece a un fallo: el
+# token es valido, el bot ENVIA sin problemas, el webhook figura registrado y
+# activo, y el diagnostico entero da en orden. Simplemente no entra ni un
+# mensaje, y no hay error en ninguna parte porque para Meta nada ha fallado.
+if ($WabaId -and -not $tokenInservible) {
+    Titulo '4b. La WABA entrega sus eventos a esta app?'
+
+    $suscritas = Llamar "/$WabaId/subscribed_apps"
+    if (-not $suscritas.Ok) {
+        Ojo "No se pudo consultar: $($suscritas.Error)"
+    }
+    else {
+        $lista = @($suscritas.Datos.data)
+        if ($lista.Count -eq 0) {
+            Mal 'La WABA no entrega sus eventos a NINGUNA app.'
+            Mal 'Por eso no entra ningun mensaje aunque todo lo demas este bien.'
+            $problemas += 'la WABA no esta suscrita a ninguna app'
+        }
+        else {
+            foreach ($a in $lista) {
+                $d = $a.whatsapp_business_api_data
+                Dato 'app suscrita' "$($d.id)  $($d.name)"
+            }
+            $ids = @($lista | ForEach-Object { "$($_.whatsapp_business_api_data.id)" })
+            $appIdEnv2 = Leer-Env 'WHATSAPP_APP_ID'
+            if ($ids -contains $appIdEnv2) {
+                Bien "La WABA entrega a tu app ($appIdEnv2)."
+            }
+            else {
+                Mal "Tu app ($appIdEnv2) NO esta en la lista: no vas a recibir mensajes."
+                Write-Host '      Se arregla solo al ejecutar:' -ForegroundColor DarkGray
+                Write-Host '        powershell -File scripts/activar-whatsapp.ps1' -ForegroundColor DarkGray
+                $problemas += 'la WABA no entrega los eventos a tu app'
+            }
+        }
+    }
+}
+
 # --------------------------------------------------- 5. envio de prueba
 if ($EnviarA) {
     Titulo '5. Envio de prueba'

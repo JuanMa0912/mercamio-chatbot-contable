@@ -215,6 +215,71 @@ if ($fallos.Count -gt 0) {
 
 Bien 'Sin errores de activacion: Meta acepto la suscripcion.'
 
+# --------------------------------------- la WABA habla con ESTA app?
+#
+# Hay DOS suscripciones distintas y hacen falta las dos. n8n solo crea la
+# primera:
+#
+#   /{app-id}/subscriptions     la app dice "mi webhook esta en esta URL"
+#   /{waba-id}/subscribed_apps  la WABA dice "mis eventos van a esta app"
+#
+# Sin la segunda, Meta acepta los mensajes entrantes y los enruta a la app que
+# si este suscrita. En una cuenta recien creada esa suele ser
+# "WA DevX Webhook Events 1P App", la app interna de Meta que alimenta el panel
+# de pruebas de Webhooks. El resultado es desconcertante: el token funciona, el
+# bot ENVIA sin problemas, el webhook figura registrado y activo, el diagnostico
+# da todo en orden, y aun asi no entra ni un solo mensaje. No hay ningun error
+# en ninguna parte porque, desde el punto de vista de Meta, nada ha fallado.
+Paso 'Comprobando que la WABA envia sus eventos a esta app'
+
+$tokenWa = Leer-Env 'WHATSAPP_TOKEN'
+$wabaId = Leer-Env 'WHATSAPP_WABA_ID'
+$appIdWa = Leer-Env 'WHATSAPP_APP_ID'
+
+if (-not $tokenWa -or -not $wabaId -or -not $appIdWa) {
+    Ojo 'Faltan WHATSAPP_TOKEN, WHATSAPP_WABA_ID o WHATSAPP_APP_ID en .env:'
+    Ojo 'no se puede comprobar. Hazlo con scripts/verificar-whatsapp.ps1.'
+}
+else {
+    # PowerShell 5.1 negocia TLS 1.0/1.1 segun el sistema y la Graph API corta
+    # la conexion, con un error que no menciona TLS por ninguna parte.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $cabWa = @{ Authorization = 'Bearer ' + $tokenWa }
+    $urlSub = "https://graph.facebook.com/v23.0/$wabaId/subscribed_apps"
+
+    function Apps-De-La-Waba {
+        try {
+            $r = Invoke-RestMethod -Uri $urlSub -Headers $cabWa -TimeoutSec 30
+            return @($r.data | ForEach-Object { "$($_.whatsapp_business_api_data.id)" })
+        }
+        catch { return $null }
+    }
+
+    $apps = Apps-De-La-Waba
+    if ($null -eq $apps) {
+        Ojo 'No se pudo consultar la lista de apps suscritas a la WABA.'
+    }
+    elseif ($apps -contains $appIdWa) {
+        Bien "La WABA ya envia sus eventos a esta app ($appIdWa)."
+    }
+    else {
+        Ojo "La WABA NO estaba suscrita a esta app. Suscribiendola."
+        if ($apps.Count -gt 0) { Ojo ("    ahora envia a: " + ($apps -join ', ')) }
+        try {
+            Invoke-RestMethod -Uri $urlSub -Method Post -Headers $cabWa -TimeoutSec 30 | Out-Null
+        }
+        catch {
+            Falla "No se pudo suscribir la WABA: $($_.Exception.Message)"
+            Write-Host '      El token necesita whatsapp_business_management y que el' -ForegroundColor DarkGray
+            Write-Host '      usuario del sistema tenga la WABA como activo.' -ForegroundColor DarkGray
+            exit 1
+        }
+        $apps = Apps-De-La-Waba
+        if ($apps -contains $appIdWa) { Bien 'Suscrita. Ahora la WABA entrega a esta app.' }
+        else { Falla 'La suscripcion no quedo registrada. Revisa los permisos del token.'; exit 1 }
+    }
+}
+
 # ------------------------------------------------------- resumen
 $base = Leer-Env 'WEBHOOK_URL'
 if (-not $base) { $base = 'http://localhost:5678/' }
