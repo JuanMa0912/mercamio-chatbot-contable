@@ -12,4 +12,7 @@
 
 # Los JSON de los workflows son artefactos generados: el diff completo en cada
 # build es ruido en las revisiones.
-workflows/*.json linguist-generated=true -diff
+# linguist-generated colapsa el diff en GitHub, pero se mantiene diferenciable
+# en local: si un cambio en src/nodes/ produce algo inesperado en el JSON, hay
+# que poder verlo.
+workflows/*.json linguist-generated=true
