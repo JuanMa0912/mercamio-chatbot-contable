@@ -241,12 +241,42 @@ else {
     else {
         Mal "El token no sirve: $($yo.Error)"
         Write-Host ''
-        Write-Host '   Causas mas frecuentes:' -ForegroundColor DarkGray
-        Write-Host '     - Es el token temporal y ya pasaron 24 h.' -ForegroundColor DarkGray
-        Write-Host '     - Se copio incompleto (son varios cientos de caracteres).' -ForegroundColor DarkGray
-        Write-Host '     - Es el App Secret o el App ID en vez del access token.' -ForegroundColor DarkGray
-        Write-Host "     - La version $Version de la Graph API ya no existe: prueba -Version v24.0" -ForegroundColor DarkGray
-        $problemas += 'token invalido'
+
+        # El subcode 463 es "sesion expirada". Es el fallo mas frecuente con
+        # diferencia: el token del boton "Generar token" de API Setup caduca a
+        # una hora fija, no 24 h despues de generarlo. Merece su propio mensaje
+        # en lugar de una lista generica de causas posibles.
+        if ("$($yo.Error)" -match 'subcode 463|[Ss]ession has expired') {
+            Mal 'TOKEN CADUCADO. Es el temporal de "API Setup", no uno permanente.'
+            Write-Host ''
+            Write-Host '   Ese boton da un token que caduca a una hora fija. Regenerarlo solo' -ForegroundColor Yellow
+            Write-Host '   aplaza el problema: el bot volvera a quedarse mudo, y el sintoma' -ForegroundColor Yellow
+            Write-Host '   despista porque el dia anterior funcionaba.' -ForegroundColor Yellow
+            Write-Host ''
+            Write-Host '   Token permanente (gratis, sin verificacion de negocio):' -ForegroundColor Cyan
+            Write-Host '     1. business.facebook.com/settings > Usuarios > Usuarios del sistema'
+            Write-Host '     2. Agregar > rol Administrador'
+            Write-Host '     3. Agregar activos > DOS cosas, no una:'
+            Write-Host '          - Apps > tu app > Administrar app'
+            Write-Host '          - Cuentas de WhatsApp > tu WABA > control total'
+            Write-Host '        (con solo la app, el token se genera pero no puede leer'
+            Write-Host '         numeros ni enviar mensajes)'
+            Write-Host '     4. Generar token nuevo > permisos:'
+            Write-Host '          whatsapp_business_messaging'
+            Write-Host '          whatsapp_business_management'
+            Write-Host '     5. Caducidad: Nunca'
+            Write-Host ''
+            Write-Host '   Detalle: docs/09-registrar-numero-whatsapp.md (paso 3)' -ForegroundColor DarkGray
+            $problemas += 'token caducado (es el temporal de API Setup)'
+        }
+        else {
+            Write-Host '   Causas mas frecuentes:' -ForegroundColor DarkGray
+            Write-Host '     - Se copio incompleto (son varios cientos de caracteres).' -ForegroundColor DarkGray
+            Write-Host '     - Es el App Secret o el App ID en vez del access token.' -ForegroundColor DarkGray
+            Write-Host '     - El token es de otra app distinta a la que estas configurando.' -ForegroundColor DarkGray
+            Write-Host "     - La version $Version de la Graph API ya no existe: prueba -Version v24.0" -ForegroundColor DarkGray
+            $problemas += 'token invalido'
+        }
         # No se aborta: la comprobacion de la suscripcion (seccion 4) usa un
         # token de APP y no depende de este. Mejor informar de todo lo que
         # falla de una vez que obligar a repetir el diagnostico.
