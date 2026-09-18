@@ -7,7 +7,9 @@
         "updates": [
           "messages"
         ],
-        "options": {}
+        "options": {
+          "messageStatusUpdates": []
+        }
       },
       "id": "a1000000-0000-4000-8000-000000000010",
       "name": "WhatsApp Business Trigger",
@@ -18,7 +20,13 @@
         0
       ],
       "webhookId": "mercamio-whatsapp-v07",
-      "notes": "Escucha \"messages\", que incluye tambien callbacks de estado (sent/delivered/read). El motor los descarta."
+      "credentials": {
+        "whatsAppTriggerApi": {
+          "id": "mercamioWaTrg001",
+          "name": "MERCAMIO WhatsApp - recibir"
+        }
+      },
+      "notes": "Escucha \"messages\", que incluye tambien callbacks de estado (sent/delivered/read). El motor los descarta. La credencial lleva App ID y App Secret, NO el access token."
     },
     {
       "parameters": {
@@ -319,7 +327,13 @@
         880,
         0
       ],
-      "notes": "Requiere credencial WhatsApp API (token permanente del System User)."
+      "credentials": {
+        "whatsAppApi": {
+          "id": "mercamioWaApi001",
+          "name": "MERCAMIO WhatsApp - enviar"
+        }
+      },
+      "notes": "La credencial lleva el access token permanente del Usuario del sistema y el Business Account ID."
     },
     {
       "parameters": {

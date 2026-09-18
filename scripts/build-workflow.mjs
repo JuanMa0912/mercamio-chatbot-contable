@@ -34,6 +34,15 @@ if (CHAT_HTML.includes('{{')) {
 
 const NOMBRE_MOTOR = 'Motor conversacional - 9 rutas';
 
+// IDs fijos de las credenciales que crea scripts/crear-credenciales-whatsapp.ps1.
+// Referenciarlas aqui evita tener que asignarlas a mano en la interfaz cada vez
+// que se reimporta el workflow. Si no existen todavia, n8n muestra el nodo con
+// la credencial en rojo y la activacion falla con "Node does not have any
+// credentials set" — que es el comportamiento correcto: mejor un error claro
+// que un workflow que parece activo y no escucha.
+const CRED_WA_ENVIAR = { id: 'mercamioWaApi001', name: 'MERCAMIO WhatsApp - enviar' };
+const CRED_WA_RECIBIR = { id: 'mercamioWaTrg001', name: 'MERCAMIO WhatsApp - recibir' };
+
 // ---------------------------------------------------------------- nodos base
 const nodoMotor = (pos) => ({
   parameters: { jsCode: MOTOR },
@@ -169,14 +178,28 @@ const workflowWhatsapp = {
   name: 'MERCAMIO - ChatBOT contable V07 (WhatsApp)',
   nodes: [
     {
-      parameters: { updates: ['messages'], options: {} },
+      parameters: {
+        updates: ['messages'],
+        options: {
+          // Descarta los acuses de estado (sent/delivered/read) DENTRO del nodo,
+          // antes de que n8n cree una ejecucion. El valor por defecto del nodo
+          // es ['all'], que los deja pasar todos: cada respuesta del bot genera
+          // ~3 acuses y por tanto 3 ejecuciones desperdiciadas.
+          //
+          // La guarda del motor (`if (!message) return []`) se mantiene como
+          // segunda linea de defensa: cubre el webhook crudo de Meta y el
+          // simulador, que no pasan por este nodo.
+          messageStatusUpdates: [],
+        },
+      },
       id: 'a1000000-0000-4000-8000-000000000010',
       name: 'WhatsApp Business Trigger',
       type: 'n8n-nodes-base.whatsAppTrigger',
       typeVersion: 1,
       position: [-220, 0],
       webhookId: 'mercamio-whatsapp-v07',
-      notes: 'Escucha "messages", que incluye tambien callbacks de estado (sent/delivered/read). El motor los descarta.',
+      credentials: { whatsAppTriggerApi: CRED_WA_RECIBIR },
+      notes: 'Escucha "messages", que incluye tambien callbacks de estado (sent/delivered/read). El motor los descarta. La credencial lleva App ID y App Secret, NO el access token.',
     },
     nodoMotor([0, 0]),
     nodoIf([220, 0]),
@@ -195,7 +218,8 @@ const workflowWhatsapp = {
       type: 'n8n-nodes-base.whatsApp',
       typeVersion: 1.1,
       position: [880, 0],
-      notes: 'Requiere credencial WhatsApp API (token permanente del System User).',
+      credentials: { whatsAppApi: CRED_WA_ENVIAR },
+      notes: 'La credencial lleva el access token permanente del Usuario del sistema y el Business Account ID.',
     },
     nota('a1000000-0000-4000-8000-0000000000n1', [-260, -320], 460, 260, 4,
       '## Flujo corregido (V07)\n\n1. El trigger entrega el evento crudo de Meta.\n2. El **motor** descarta callbacks de estado y webhooks repetidos, y decide la respuesta.\n3. El **If** usa la bandera booleana `has_ticket` (antes evaluaba `ticket` como objeto y rompia con `null`).\n4. Solo la rama TRUE escribe en Sheets. Antes estaba invertida.\n5. Una sola ruta llega al envio: antes el mensaje salia duplicado.'),

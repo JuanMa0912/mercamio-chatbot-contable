@@ -220,16 +220,39 @@ el negocio le afectan poco.
 
 ## Paso 7 — Conectarlo con n8n
 
-Con el diagnóstico en verde:
+Con el diagnóstico en verde, son tres comandos:
 
-1. **Túnel arriba** para que Meta alcance tu n8n local →
-   [03 — Webhook y túnel](03-webhook-whatsapp-tunel.md)
-2. **Credenciales en n8n** (dos, aunque compartan el token) →
-   [04 — Credenciales](04-credenciales.md)
-3. **Registrar el webhook** en Meta y suscribir el campo `messages` →
-   [03](03-webhook-whatsapp-tunel.md)
-4. **Activar** el workflow `V07 (WhatsApp)`
-5. Escribir "hola" desde un celular de la lista de permitidos
+```powershell
+# 1. Crear las dos credenciales desde .env (ID fijo, ya referenciado)
+powershell -File scripts/crear-credenciales-whatsapp.ps1
+
+# 2. Publicar n8n en una URL https (sin cuenta de Cloudflare)
+powershell -File scripts/tunel-rapido.ps1
+
+# 3. Activar. Aqui n8n registra el webhook en Meta POR SI SOLO.
+powershell -File scripts/activar-whatsapp.ps1
+```
+
+> ### No configures el webhook a mano en Meta
+>
+> Al activar, el nodo WhatsApp Trigger llama a la Graph API y crea la
+> suscripción con su propia `callback_url` y su propio `verify_token`. **No hay
+> que pegar nada en WhatsApp → Configuration → Webhook.**
+>
+> Si ya hay una suscripción manual, la activación falla con
+> *"The WhatsApp App ID ... already has a webhook subscription"*. En ese caso
+> hay que **borrar** la suscripción manual y dejar que n8n la cree.
+>
+> Detalle en [03](03-webhook-whatsapp-tunel.md#registrar-el-webhook-en-meta-n8n-lo-hace-solo).
+
+El orden importa: el túnel va **antes** de activar, porque n8n registra en Meta
+la URL que tenga en ese momento. Si activas con `WEBHOOK_URL` apuntando a
+`localhost`, Meta se queda con una URL inalcanzable y hay que desactivar y
+volver a activar.
+
+Lo único que queda en el panel de Meta es añadir los destinatarios de prueba
+(**API Setup → To → Manage phone number list**). Después, escribe "hola" desde
+uno de ellos.
 
 Lista de verificación completa en [06 — Pruebas](06-pruebas.md#nivel-3--whatsapp-real).
 

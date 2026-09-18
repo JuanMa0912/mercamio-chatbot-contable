@@ -134,56 +134,64 @@ por un tercero. Para un flujo que trata datos personales bajo la Ley 1581 de
 
 ---
 
-## Registrar el webhook en Meta
+## Registrar el webhook en Meta: n8n lo hace solo
 
-Con el túnel arriba y el workflow de WhatsApp importado:
+**No vayas al panel de Meta a pegar la URL.** Es la parte contraintuitiva y
+hacerlo a mano provoca un fallo.
 
-### 1. La URL del webhook
+Al activar el workflow, el nodo WhatsApp Trigger llama a la Graph API y crea la
+suscripcion por su cuenta:
 
-Abre el workflow **V07 (WhatsApp)** en n8n, haz doble clic en **WhatsApp
-Business Trigger** y copia la **Production URL**. Tendrá esta forma:
+```js
+// WhatsAppTrigger.node.js  ->  webhookMethods.default.create()
+await appWebhookSubscriptionCreate(appId, {
+  object: 'whatsapp_business_account',
+  callback_url: webhookUrl,          // la URL del propio n8n
+  verify_token: this.getNode().id,   // se lo inventa y lo valida el mismo
+  fields: JSON.stringify(updates),   // ["messages"]
+});
+```
+
+Por eso la credencial del trigger pide **App ID y App Secret** y no el access
+token: los usa para autenticarse como la app y suscribirla.
+
+### Que pasa si lo configuras a mano
+
+Si ya hay una suscripcion en el panel con otra `callback_url`, la activacion
+**falla**:
 
 ```
-https://n8n-dev.mercamio.com.co/webhook/<id>/webhook
+The WhatsApp App ID <id> already has a webhook subscription.
+Delete it or use another App before executing the trigger.
+Due to WhatsApp API limitations, you can have just one trigger per App.
 ```
 
-Si ahí sigue apareciendo `localhost`, `WEBHOOK_URL` no se aplicó: revisa que
-usaste `docker compose up -d` y no `restart`.
+Solucion: **borrar** la suscripcion manual en
+**WhatsApp > Configuration > Webhook** y dejar que n8n la cree.
 
-### 2. Activar el workflow
+### Una app, un trigger
 
-El webhook **solo existe si el workflow está activo**. Con el workflow inactivo,
-la URL devuelve 404 y la verificación de Meta falla.
+Limitacion de la API de Meta, no de n8n: **un solo WhatsApp Trigger por cada app
+de Facebook**. Si necesitas dos flujos distintos, necesitas dos apps — o un
+unico trigger que reparta por dentro.
 
-### 3. En el panel de Meta
+### El orden correcto
 
-<https://developers.facebook.com> → tu app → **WhatsApp → Configuration** →
-**Webhook → Edit**:
+```
+1. Token, App ID y App Secret            -> Meta > API Setup y > Configuracion basica
+2. Credenciales en n8n                   -> scripts/crear-credenciales-whatsapp.ps1
+3. Tunel arriba (URL publica https)      -> scripts/tunel-rapido.ps1
+4. Activar el workflow                   -> scripts/activar-whatsapp.ps1
+     ^ aqui n8n registra el webhook en Meta, solo
+5. Anadir destinatarios de prueba        -> Meta > API Setup > To
+6. Escribir "hola" desde un celular
+```
 
-- **Callback URL**: la Production URL copiada.
-- **Verify token**: cualquier cadena. n8n no la valida, pero Meta la exige.
-- **Verify and save**.
+El paso 3 va **antes** del 4 a proposito: n8n registra en Meta la URL que tenga
+configurada en ese momento. Si activas con `WEBHOOK_URL=http://localhost:5678`,
+Meta se queda con una URL que no puede alcanzar, y hay que desactivar y volver
+a activar.
 
-Meta hace un `GET` con `hub.challenge` a esa URL. Si responde, queda verificado.
-
-### 4. Suscribir el campo `messages`
-
-En **Webhook fields**, marca **messages**. Es el único que hace falta.
-
-> Ese campo entrega **dos** tipos de evento: mensajes entrantes
-> (`value.messages[]`) y acuses de estado de los mensajes que **tú** enviaste
-> (`value.statuses[]`: `sent`, `delivered`, `read`).
->
-> Los acuses también disparan el workflow. Cada respuesta del bot genera al
-> menos tres. El motor V07 los descarta al principio:
->
-> ```js
-> if (!message) { return []; }
-> ```
->
-> La V06 no lo hacía: los procesaba como mensajes vacíos, todos bajo la misma
-> sesión `'demo-mercamio'`. Ver
-> [05 — BUG-05](05-auditoria-workflow.md#bug-05--el-trigger-se-auto-dispara-con-los-callbacks-de-estado).
 
 ---
 
@@ -224,24 +232,36 @@ mal registrado o campo sin suscribir), no en n8n.
 
 ## Seguridad del webhook
 
-La ruta `/webhook/*` tiene que ser pública para que Meta entregue, y n8n **no
-valida la firma** `X-Hub-Signature-256` de Meta en el nodo trigger. Consecuencia:
-cualquiera que conozca la URL puede inyectar eventos falsos en tu flujo.
+La ruta `/webhook/*` tiene que ser publica para que Meta entregue. La pregunta
+es quien mas puede inyectar eventos.
 
-Mitigaciones, de menor a mayor esfuerzo:
+**n8n valida la firma de Meta.** El nodo calcula el HMAC-SHA256 del cuerpo
+crudo con el App Secret y lo compara con la cabecera `X-Hub-Signature-256`:
 
-1. **No compartas la URL del webhook.** Contiene un id aleatorio, así que no es
-   adivinable — pero tampoco es un secreto criptográfico.
-2. **Regla de WAF en Cloudflare** que solo admita `POST` desde los rangos de IP
-   de Meta a `/webhook/*`. Es la opción con mejor relación esfuerzo/beneficio.
-3. **Validar la firma HMAC** con un nodo Code antes del motor, usando el
-   `App Secret` de la app de Meta. Es lo correcto, y no está implementado en
-   este repositorio: requiere acceso al cuerpo crudo de la petición, que el
-   nodo WhatsApp Trigger no expone (haría falta sustituirlo por un nodo Webhook
-   genérico con `rawBody`).
+```js
+// WhatsAppTrigger.node.js  ->  webhook()
+const computedSignature = createHmac(sha256, credentials.clientSecret)
+  .update(req.rawBody).digest(hex);
+if (headerData['x-hub-signature-256'] !== `sha256=${computedSignature}`) {
+  return {};   // descartado en silencio
+}
+if (bodyData.object !== 'whatsapp_business_account') return {};
+```
 
-Para un entorno de pruebas con túnel, la opción 2 es suficiente. Antes de
-atender proveedores reales, la 3.
+Un evento falso sin la firma correcta se descarta antes de llegar al motor. Eso
+solo funciona si el **App Secret de la credencial es el correcto**; si te
+equivocas al copiarlo, el bot no responde a nada y no hay ningun error visible
+—los mensajes legitimos tambien fallan la comprobacion de firma—. Es un modo de
+fallo silencioso que cuesta diagnosticar: si Meta entrega y n8n no ejecuta nada,
+sospecha del App Secret antes que de cualquier otra cosa.
+
+Lo que **sigue** sin proteger es la interfaz de n8n, que el tunel tambien
+expone. Ahi solo esta tu contrasena. Recomendable:
+
+1. **Cloudflare Access** (Zero Trust > Access > Applications) limitado a los
+   correos de MERCAMIO, **excepto** `/webhook/*`, que debe quedar publica.
+2. Como minimo, una contrasena fuerte de verdad en la cuenta de n8n.
+
 
 ---
 

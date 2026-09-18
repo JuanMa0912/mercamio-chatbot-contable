@@ -10,8 +10,9 @@ base de datos con `N8N_ENCRYPTION_KEY`.
 | WhatsApp API | Responder por WhatsApp Business | Enviar las respuestas. |
 | Google Sheets OAuth2 | Registrar solicitud en Sheets | Escribir los tickets. |
 
-Son dos credenciales distintas para WhatsApp aunque usen el mismo token: n8n
-separa el trigger del nodo de acción.
+Son dos credenciales distintas para WhatsApp y **no llevan los mismos datos**:
+la de envío usa el access token; la del trigger usa el App ID y el App Secret.
+Detalle en [4. En n8n](#4-en-n8n).
 
 ---
 
@@ -157,18 +158,40 @@ De **WhatsApp → API Setup**:
 
 ### 4. En n8n
 
-**Credentials → Add credential**, dos veces:
+Son **dos credenciales con campos distintos**, y aquí está la confusión más
+común:
 
-**a) WhatsApp API** (para enviar)
-- Access Token: el permanente
-- Business Account ID
+| Credencial | Nodo | Campos reales |
+|---|---|---|
+| `whatsAppApi` | Responder por WhatsApp Business | `accessToken` + `businessAccountId` |
+| `whatsAppTriggerApi` | WhatsApp Business Trigger | `clientId` + `clientSecret` |
 
-**b) WhatsApp Trigger API** (para recibir)
-- Access Token: el mismo
-- App ID y App Secret de la app de Meta (**Configuración → Básica**)
+> **La credencial del trigger NO lleva el access token.** Lleva el **App ID** y
+> el **App Secret** (Meta → **Configuración → Básica**). Los usa para dos cosas:
+> autenticarse como la app para registrar el webhook en Meta, y validar la firma
+> `X-Hub-Signature-256` de cada evento entrante.
+>
+> Si pones ahí el access token, la activación falla. Si el App Secret está mal
+> copiado, **el bot no responde a nada y no hay ningún error visible**: todos
+> los mensajes legítimos fallan la comprobación de firma y se descartan en
+> silencio. Si Meta entrega y n8n no ejecuta nada, sospecha del App Secret
+> antes que de cualquier otra cosa.
 
-Asígnalas en el workflow: la primera a **Responder por WhatsApp Business**, la
-segunda a **WhatsApp Business Trigger**.
+**La forma rápida** — lee los valores de `.env`, crea las dos con ID fijo, y el
+workflow generado ya las referencia, así que no hay que asignarlas a mano ni
+reasignarlas tras cada importación:
+
+```powershell
+powershell -File scripts/crear-credenciales-whatsapp.ps1
+```
+
+El token nunca pasa por la terminal: se lee de `.env`, se escribe a un temporal
+fuera del repositorio, se importa cifrado y se borra de los dos lados.
+
+**A mano**, si prefieres la interfaz: **Credentials → Add credential**, una de
+cada tipo, y luego asignarlas en cada nodo. Si las creas así, sus IDs no
+coincidirán con los que espera el JSON generado y tendrás que reasignarlas cada
+vez que reimportes.
 
 ### 5. El `phoneNumberId` se resuelve solo
 
