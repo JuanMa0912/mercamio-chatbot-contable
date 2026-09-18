@@ -289,6 +289,18 @@ Antes de hacer público el repositorio, lee
 
 ---
 
+## Licencia
+
+Propiedad de MERCAMIO S.A.S. — todos los derechos reservados. El repositorio es
+publico para consulta y documentacion, pero **no concede licencia de uso,
+copia, modificacion ni redistribucion**. Ver [LICENSE](LICENSE).
+
+Si alguna vez se quiere permitir la reutilizacion del patron (n8n + maquina de
+estados testeable + build reproducible), lo limpio es extraerlo a un
+repositorio aparte con licencia permisiva y sin las rutas de negocio.
+
+---
+
 ## Requisitos
 
 | | |
