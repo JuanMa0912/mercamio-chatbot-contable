@@ -34,6 +34,9 @@ powershell -File scripts/importar-workflows.ps1
 # 5. En la interfaz: abre "V07 (Simulador local)" y ACTÍVALO con el interruptor
 
 # 6. Conversar con el bot
+#    Chat web (para que lo pruebe contabilidad):
+#      http://localhost:5678/webhook/mercamio-chat
+#    O por consola:
 powershell -File scripts/simular-conversacion.ps1 -Guion acreedor-diferencia
 ```
 
@@ -57,12 +60,16 @@ el error más común: ver [docs/06-pruebas.md](docs/06-pruebas.md).
 
 ## Antes de seguir: dos límites que conviene tener claros
 
-**1. El trigger de WhatsApp no funciona solo en local.** La API de Meta entrega
-los mensajes por webhook y necesita una **URL pública HTTPS**. `localhost:5678`
-no le sirve. Para conectar el número real hace falta un túnel (Cloudflare o
-ngrok): [docs/03-webhook-whatsapp-tunel.md](docs/03-webhook-whatsapp-tunel.md).
-Por eso el repositorio incluye dos workflows: el **simulador** desarrolla y
-prueba toda la lógica sin Meta, y el de **WhatsApp** se conecta cuando hay túnel.
+**1. El trigger de WhatsApp no funciona solo en local, y el token no es el
+único requisito.** La API de Meta entrega los mensajes por webhook y necesita
+una **URL pública HTTPS**; `localhost:5678` no le sirve. Además hacen falta un
+número que no esté ya registrado en WhatsApp y, para producción, la
+verificación de negocio de MERCAMIO. Ver
+[docs/08-sin-token-de-meta.md](docs/08-sin-token-de-meta.md).
+
+Por eso el repositorio incluye dos workflows: el **simulador** —con chat web
+incluido— desarrolla y valida toda la lógica sin Meta, y el de **WhatsApp** se
+conecta cuando haya túnel y credenciales.
 
 **2. El estado de la conversación vive en el static data del workflow.** Sirve
 para una instancia única —el escenario de este repositorio— pero no escala a
@@ -82,6 +89,7 @@ en [docs/05-auditoria-workflow.md](docs/05-auditoria-workflow.md#deuda-técnica-
 | [05 — Auditoría del workflow](docs/05-auditoria-workflow.md) | Los 12 fallos de la V06, por qué rompían y cómo se corrigieron. |
 | [06 — Pruebas](docs/06-pruebas.md) | Pruebas del motor, simulador y diagnóstico de fallos. |
 | [07 — Privacidad y repo público](docs/07-privacidad-y-repo-publico.md) | Qué NO puede subirse y cómo está resuelto. |
+| [08 — Sin token de Meta](docs/08-sin-token-de-meta.md) | Qué se puede validar hoy, qué bloquea de verdad y en qué orden desbloquearlo. |
 
 ---
 
@@ -92,9 +100,11 @@ en [docs/05-auditoria-workflow.md](docs/05-auditoria-workflow.md#deuda-técnica-
 ├── docker-compose.yml          Pila: n8n + PostgreSQL (+ túnel y Adminer opcionales)
 ├── .env.example                Plantilla de configuración  →  copiar a .env
 │
-├── src/nodes/                  ── FUENTE DE VERDAD DEL CÓDIGO ──
-│   ├── 01-motor-conversacional.js    Máquina de estados de las 9 rutas
-│   └── 02-recuperar-respuesta.js     Recupera el item tras escribir en Sheets
+├── src/
+│   ├── nodes/                  ── FUENTE DE VERDAD DEL CÓDIGO ──
+│   │   ├── 01-motor-conversacional.js  Máquina de estados de las 9 rutas
+│   │   └── 02-recuperar-respuesta.js   Recupera el item tras escribir en Sheets
+│   └── ui/chat.html            Chat web de pruebas, servido por n8n
 │
 ├── scripts/
 │   ├── build-workflow.mjs            Genera los JSON inyectando src/nodes/*.js
@@ -319,7 +329,8 @@ repositorio aparte con licencia permisiva y sin las rutas de negocio.
 - ✅ Simulador local funcionando de punta a punta en Docker
 - ✅ Estado de conversación con TTL, tope e idempotencia
 - ✅ Los 12 fallos de la V06 corregidos y con prueba de regresión
-- ⏳ WhatsApp Business: requiere túnel + credenciales ([03](docs/03-webhook-whatsapp-tunel.md), [04](docs/04-credenciales.md))
+- ✅ Chat web de pruebas servido por n8n, sin cuentas externas
+- ⏳ WhatsApp Business: requiere túnel + credenciales ([03](docs/03-webhook-whatsapp-tunel.md), [04](docs/04-credenciales.md), [08](docs/08-sin-token-de-meta.md))
 - ⏳ Google Sheets: requiere credencial OAuth2 ([04](docs/04-credenciales.md))
 - ❌ Consulta del estado de un ticket ya creado — no implementado
 - ❌ Notificaciones de seguimiento — requieren plantillas aprobadas por Meta

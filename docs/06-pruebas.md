@@ -86,7 +86,39 @@ nuevaConversacion({ silencioso: false })                        // muestra conso
 ## Nivel 2 — El simulador, dentro de Docker
 
 Prueba el flujo completo —webhook, motor, If, ramas, respuesta— sin cuenta de
-Meta ni credenciales de Google.
+Meta ni credenciales de Google. Dos formas: chat web o consola.
+
+### Chat web
+
+```
+http://localhost:5678/webhook/mercamio-chat
+```
+
+Es la forma de poner a **contabilidad** a probar el bot: nadie del área va a
+ejecutar un script de PowerShell. Muestra la conversación como WhatsApp, con
+botones para las opciones del menú y un panel plegable con `accion`, `paso`,
+`ruta` y el ticket generado.
+
+El botón **Nueva** arranca de cero con otro número simulado. El número se
+guarda en `localStorage`, así que recargar la página continúa la conversación.
+
+La sirve el propio n8n desde el workflow del simulador (webhook GET
+`mercamio-chat` → Respond to Webhook). Va en el mismo origen que el webhook de
+mensajes, así que no hay peticiones cruzadas ni CORS que configurar, ni un
+servidor web extra. El HTML fuente está en `src/ui/chat.html` y lo inyecta
+`build-workflow.mjs`: **no se edita en la interfaz de n8n**.
+
+Para que lo prueben desde el móvil, en la misma red:
+
+```powershell
+# la IP del PC en la red local
+(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.PrefixOrigin -eq 'Dhcp' }).IPAddress
+# luego, en el movil:  http://<esa-ip>:5678/webhook/mercamio-chat
+```
+
+Puede requerir abrir el puerto 5678 en el firewall de Windows.
+
+### Consola
 
 ```powershell
 powershell -File scripts/simular-conversacion.ps1 -Guion acreedor-diferencia

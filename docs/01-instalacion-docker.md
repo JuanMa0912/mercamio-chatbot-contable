@@ -162,6 +162,41 @@ docker compose exec n8n ls //workflows                     # doble barra
 En PowerShell no pasa. Los scripts de este repositorio son de PowerShell
 precisamente por esto.
 
+### `Invoke-RestMethod` da timeout contra `localhost` pero curl funciona
+
+En Windows 11, `localhost` resuelve **primero a `::1`** (IPv6) y Docker Desktop
+no siempre responde por ahi. `curl` reintenta por IPv4 y funciona, aunque tarda
+~1,2 s en vez de ~1 ms. `Invoke-RestMethod` **no hace ese fallback**: agota el
+`-TimeoutSec` y lanza `WebException`.
+
+```powershell
+[System.Net.Dns]::GetHostAddresses('localhost')
+#   InterNetworkV6 : ::1        <- se intenta primero
+#   InterNetwork   : 127.0.0.1
+
+Invoke-RestMethod http://localhost:5678/healthz -TimeoutSec 6   # timeout
+Invoke-RestMethod http://127.0.0.1:5678/healthz -TimeoutSec 6   # ok en 1 ms
+```
+
+**Regla:** en scripts de PowerShell usa siempre `127.0.0.1`. En el navegador
+`localhost` va bien, porque los navegadores si hacen el fallback rapido.
+
+Los scripts de este repositorio ya usan `127.0.0.1`. Este fallo produjo un
+falso negativo real en la espera de arranque de `importar-workflows.ps1`:
+reportaba que n8n no habia vuelto cuando Docker lo daba por `healthy`.
+
+### `NativeCommandError` al ejecutar docker desde un script
+
+En Windows PowerShell 5.1, redirigir el stderr de un ejecutable nativo
+(`docker compose restart n8n *>$null` o `2>&1`) envuelve cada linea en un
+`ErrorRecord` de tipo `NativeCommandError` y pone `$?` en `$false`, **aunque el
+comando haya devuelto 0**. Con `$ErrorActionPreference = 'Stop'` eso aborta el
+script. docker escribe su progreso en stderr, asi que le pasa siempre.
+
+Solucion: no redirigir stderr. Bajar la preferencia de error solo durante la
+llamada y consultar `$LASTEXITCODE`, que si es fiable. Ver la funcion
+`Invocar-Nativo` en [`scripts/importar-workflows.ps1`](../scripts/importar-workflows.ps1).
+
 ### Lentitud al leer archivos montados
 
 El volumen `./workflows:/workflows:ro` cruza la frontera entre Windows y WSL2 y

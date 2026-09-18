@@ -142,16 +142,31 @@ if ($activosAntes.Count -gt 0) {
         exit 1
     }
 
+    # OJO con la URL: se usa 127.0.0.1 y NO localhost.
+    #
+    # En Windows 11, `localhost` resuelve primero a ::1 (IPv6) y Docker Desktop
+    # no siempre responde por ahi. curl hace fallback a IPv4 y tarda ~1,2 s,
+    # pero Invoke-RestMethod NO hace ese fallback: agota el -TimeoutSec y lanza
+    # WebException. Con 127.0.0.1 la misma peticion responde en ~1 ms.
+    #
+    # Este bucle daba un falso negativo por eso: reportaba que n8n no habia
+    # vuelto cuando en realidad estaba healthy.
     $listo = $false
     foreach ($intento in 1..40) {
         Start-Sleep -Seconds 3
         try {
-            if ((Invoke-RestMethod -Uri 'http://localhost:5678/healthz' -TimeoutSec 5).status -eq 'ok') {
+            if ((Invoke-RestMethod -Uri 'http://127.0.0.1:5678/healthz' -TimeoutSec 5).status -eq 'ok') {
                 $listo = $true
                 break
             }
         }
         catch { }
+    }
+    if (-not $listo) {
+        # Segunda opinion sin tocar la pila de red de Windows: si Docker dice
+        # que el contenedor esta healthy, el problema es de la comprobacion.
+        $salud = (docker inspect --format '{{.State.Health.Status}}' mercamio-n8n 2>$null) -join ''
+        if ($salud.Trim() -eq 'healthy') { $listo = $true }
     }
     if ($listo) {
         Write-Host ''

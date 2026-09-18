@@ -31,7 +31,12 @@
 param(
     [string]$Guion = 'completo',
     [string]$Telefono = '',
-    [string]$Url = 'http://localhost:5678/webhook/mercamio-sim'
+    # 127.0.0.1 y NO localhost: en Windows 11 `localhost` resuelve primero a ::1
+    # y Docker Desktop no siempre responde por IPv6. Invoke-RestMethod no hace
+    # el fallback a IPv4 que si hace curl, asi que con `localhost` da timeouts
+    # intermitentes. Con la IP literal responde en ~1 ms.
+    # (En el navegador `localhost` va bien: los navegadores si hacen fallback.)
+    [string]$Url = 'http://127.0.0.1:5678/webhook/mercamio-sim'
 )
 
 $ErrorActionPreference = 'Stop'
