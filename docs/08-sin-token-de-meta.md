@@ -45,7 +45,7 @@ acceso a los documentos legales lo tramite.
 | Business Verification | **No** | Sí |
 | Token permanente | Sí (System User) | Sí |
 | A quién puede escribir | **5 números** que registres a mano | Cualquiera que le escriba |
-| Conversaciones gratis/mes | 1.000 | 1.000 |
+| Coste de los mensajes | 0 | 0 para este bot — ver [10](10-costos-reales.md) |
 | Nombre visible | El de la app | El aprobado por Meta |
 
 **El número de prueba alcanza de sobra para validar el bot con el equipo de

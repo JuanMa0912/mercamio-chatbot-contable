@@ -91,6 +91,7 @@ en [docs/05-auditoria-workflow.md](docs/05-auditoria-workflow.md#deuda-técnica-
 | [07 — Privacidad y repo público](docs/07-privacidad-y-repo-publico.md) | Qué NO puede subirse y cómo está resuelto. |
 | [08 — Sin token de Meta](docs/08-sin-token-de-meta.md) | Qué se puede validar hoy, qué bloquea de verdad y en qué orden desbloquearlo. |
 | [09 — Token y número de WhatsApp](docs/09-registrar-numero-whatsapp.md) | Conseguir el token permanente, registrar un número y comprobarlo antes de tocar n8n. |
+| [10 — Qué cuesta de verdad](docs/10-costos-reales.md) | Qué es gratis, qué no, y el costo de disponibilidad que no aparece en ninguna factura. |
 
 ---
 
@@ -348,7 +349,7 @@ repositorio aparte con licencia permisiva y sin las rutas de negocio.
 
 | | |
 |---|---|
-| Docker Desktop | 4.x con WSL2 — [guía](docs/01-instalacion-docker.md) |
+| Docker Desktop | 4.x con WSL2 — [guía](docs/01-instalacion-docker.md). **Solo gratis si la empresa tiene <250 empleados y <10 M USD**; si no, requiere licencia o migrar a Docker Engine en WSL2 ([10](docs/10-costos-reales.md)). |
 | Node.js | ≥ 20, solo para las pruebas y el build (no para ejecutar el bot) |
 | n8n | 1.117.2, fijada en `.env`. `latest` rompe flujos sin avisar. |
 | RAM libre | ~2 GB |
