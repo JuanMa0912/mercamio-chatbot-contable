@@ -159,7 +159,7 @@ foreach ($r in $rutas) {
 ```powershell
 $t = '573001112233'
 'hola','1','Juan Perez','1','1','juan@empresa.com' | ForEach-Object {
-    $r = Invoke-RestMethod -Uri http://localhost:5678/webhook/mercamio-sim -Method Post `
+    $r = Invoke-RestMethod -Uri http://127.0.0.1:5678/webhook/mercamio-sim -Method Post `
          -ContentType 'application/json' -Body (@{from=$t; text=$_} | ConvertTo-Json -Compress)
     "$_  ->  [$($r.estado)] $($r.respuesta)"
 }

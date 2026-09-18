@@ -90,6 +90,7 @@ en [docs/05-auditoria-workflow.md](docs/05-auditoria-workflow.md#deuda-técnica-
 | [06 — Pruebas](docs/06-pruebas.md) | Pruebas del motor, simulador y diagnóstico de fallos. |
 | [07 — Privacidad y repo público](docs/07-privacidad-y-repo-publico.md) | Qué NO puede subirse y cómo está resuelto. |
 | [08 — Sin token de Meta](docs/08-sin-token-de-meta.md) | Qué se puede validar hoy, qué bloquea de verdad y en qué orden desbloquearlo. |
+| [09 — Token y número de WhatsApp](docs/09-registrar-numero-whatsapp.md) | Conseguir el token permanente, registrar un número y comprobarlo antes de tocar n8n. |
 
 ---
 
@@ -109,7 +110,8 @@ en [docs/05-auditoria-workflow.md](docs/05-auditoria-workflow.md#deuda-técnica-
 ├── scripts/
 │   ├── build-workflow.mjs            Genera los JSON inyectando src/nodes/*.js
 │   ├── importar-workflows.ps1        Prueba + genera + importa en n8n
-│   └── simular-conversacion.ps1      Conversa con el bot sin WhatsApp
+│   ├── simular-conversacion.ps1      Conversa con el bot sin WhatsApp
+│   └── verificar-whatsapp.ps1        Diagnostica el token y los números en Meta
 │
 ├── tests/
 │   ├── harness.mjs                   Ejecuta el motor con los globales de n8n simulados
@@ -230,6 +232,7 @@ npm test                               # pruebas del motor (sin Docker)
 npm run build                          # regenerar los JSON
 powershell -File scripts/importar-workflows.ps1
 powershell -File scripts/simular-conversacion.ps1 -Guion interactivo
+powershell -File scripts/verificar-whatsapp.ps1     # diagnóstico de Meta
 
 docker compose --profile tools up -d   # Adminer en http://localhost:8080
 docker compose --profile tunnel up -d  # túnel de Cloudflare
@@ -252,6 +255,36 @@ docker compose exec n8n rm /tmp/cred.json
 `--decrypted` deja los tokens **en texto plano**. Ese archivo es tan sensible
 como una contraseña: guárdalo cifrado y fuera del repositorio (`.gitignore` ya
 bloquea `*credenciales*.json`, pero no dependas solo de eso).
+
+---
+
+## La cuenta de n8n
+
+En el primer arranque, <http://localhost:5678> pide crear la cuenta de
+propietario. Es una cuenta **local de esta instancia**: no es una cuenta de
+n8n.cloud, y el correo que pongas es solo un identificador — **no conecta con
+Google**. La credencial de Google Sheets es OAuth aparte
+([04](docs/04-credenciales.md)).
+
+> **La contraseña merece una fuerte de verdad.** El `docker-compose.yml`
+> incluye el perfil `tunnel`, necesario para WhatsApp. En cuanto se activa,
+> ese login queda expuesto a internet, y detrás de él están el token de
+> WhatsApp y el OAuth de Google con acceso a la hoja de solicitudes. Quien
+> entre no solo lee: puede editar el workflow y redirigir los tickets.
+>
+> Usa 20 caracteres aleatorios del gestor de contraseñas. Evita cualquier cosa
+> derivada de `mercamio`: está en cualquier lista construida a partir del
+> dominio.
+
+En autoalojado **no hay recuperación por correo**. Si se pierde la contraseña,
+la única salida borra la cuenta:
+
+```powershell
+docker compose exec n8n n8n user-management:reset
+```
+
+Los workflows y las credenciales sobreviven a ese reset; hay que volver a
+crear la cuenta de propietario.
 
 ---
 

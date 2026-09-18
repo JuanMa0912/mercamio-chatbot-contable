@@ -11,9 +11,17 @@ Cloud API exige un número de teléfono **sin cuenta de WhatsApp activa**. Si el
 número que MERCAMIO quiere usar ya tiene WhatsApp —normal o la app Business—
 hay que **eliminar esa cuenta** antes de registrarlo.
 
-Es irreversible: se pierde el historial de conversaciones de ese número. Si es
-un número que contabilidad ya usa para atender proveedores, esa decisión no es
-técnica.
+Y lo que se pierde no es solo el historial: **un número en Cloud API deja de
+poder usarse en la app de WhatsApp**. Nadie podrá abrir WhatsApp con él ni
+responder a mano desde un celular mientras esté en la API.
+
+Así que la pregunta no es si tiene chats, sino si **alguien de contabilidad
+atiende proveedores desde ese número hoy**. Si la respuesta es sí, al día
+siguiente del registro no podrá. Esa decisión no es técnica.
+
+Hay tres comprobaciones más —que reciba SMS, que no sea virtual, que no esté
+ya en un BSP— en
+[09 — Token y número de WhatsApp](09-registrar-numero-whatsapp.md).
 
 Alternativas:
 - Conseguir una línea nueva dedicada al bot.
@@ -44,11 +52,8 @@ acceso a los documentos legales lo tramite.
 contabilidad.** 5 destinatarios registrados a mano es exactamente lo que se
 necesita para un piloto interno.
 
-Cómo: en `developers.facebook.com` → app tipo Business → añadir el producto
-WhatsApp. Da un número de prueba y un token temporal de 24 h. Para el
-permanente, crear un System User en Business Manager (gratis, instantáneo, **no
-requiere Business Verification**). Pasos en
-[04 — Credenciales](04-credenciales.md).
+Paso a paso completo, con el diagnóstico para no avanzar a ciegas:
+[09 — Token y número de WhatsApp](09-registrar-numero-whatsapp.md).
 
 Sigue haciendo falta el **túnel** para que Meta alcance tu n8n local
 ([03](03-webhook-whatsapp-tunel.md)).

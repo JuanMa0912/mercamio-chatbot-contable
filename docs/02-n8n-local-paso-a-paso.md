@@ -105,7 +105,7 @@ docker compose logs n8n --tail 50
 Comprobación rápida:
 
 ```powershell
-Invoke-RestMethod http://localhost:5678/healthz
+Invoke-RestMethod http://127.0.0.1:5678/healthz
 # status : ok
 ```
 
@@ -116,9 +116,22 @@ Invoke-RestMethod http://localhost:5678/healthz
 Abre <http://localhost:5678>. La primera vez n8n pide crear la cuenta del
 propietario: correo, nombre y contraseña.
 
-Es una cuenta **local de esta instancia**, no una cuenta de n8n.cloud. Guárdala
-en el gestor de contraseñas: sin ella no se puede entrar a la interfaz y no hay
-recuperación por correo en una instalación autoalojada.
+Es una cuenta **local de esta instancia**, no una cuenta de n8n.cloud. El
+correo es solo un identificador: **no conecta con Google**. Poner un Gmail ahí
+no hace que Google Sheets funcione — esa credencial es OAuth aparte
+([04](04-credenciales.md)).
+
+> **La contraseña no es un trámite.** El perfil `tunnel` del compose, que hace
+> falta para WhatsApp, expone este login a internet. Detrás está el token de
+> WhatsApp y el acceso a la hoja de solicitudes, y quien entre puede editar el
+> workflow para redirigir los tickets. n8n solo exige 8 caracteres con una
+> mayúscula y un número, así que acepta cosas como `Empresa123` — que cae ante
+> un diccionario en segundos. Usa 20 caracteres aleatorios del gestor.
+
+Guárdala **antes** de enviar el formulario: en autoalojado no hay recuperación
+por correo. La única salida es `docker compose exec n8n n8n
+user-management:reset`, que borra la cuenta (los workflows y credenciales
+sobreviven).
 
 > Si el login entra en bucle y vuelve al formulario, es la cookie: en `http` n8n
 > la marca como `Secure` y el navegador la descarta. `.env` ya trae
@@ -248,7 +261,7 @@ Guiones disponibles: `completo`, `cliente-retenciones`, `cliente-cartera`,
 O a mano:
 
 ```powershell
-Invoke-RestMethod -Uri http://localhost:5678/webhook/mercamio-sim -Method Post `
+Invoke-RestMethod -Uri http://127.0.0.1:5678/webhook/mercamio-sim -Method Post `
   -ContentType 'application/json' -Body '{"from":"573001112233","text":"hola"}'
 ```
 
