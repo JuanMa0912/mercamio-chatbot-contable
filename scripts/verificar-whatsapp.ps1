@@ -377,8 +377,29 @@ if ($WabaId) {
 if ($phoneIdEnv) {
     Write-Host ''
     Dato 'PHONE_NUMBER_ID .env' $phoneIdEnv
-    if ($idsEncontrados.Count -and ($idsEncontrados -notcontains $phoneIdEnv)) {
-        Ojo 'Ese ID no aparece entre los numeros de la WABA. Puede estar desactualizado.'
+
+    # Con un numero de pruebas y uno real conviviendo en la misma cuenta, es
+    # facil dejar el .env apuntando al que no es. Se dice a cual corresponde en
+    # vez de limitarse a decir si existe.
+    $coincide = $null
+    if ($nums -and $nums.Ok -and $nums.Datos.data) {
+        $coincide = @($nums.Datos.data | Where-Object { "$($_.id)" -eq $phoneIdEnv })[0]
+    }
+
+    if ($null -ne $coincide) {
+        Bien "Apunta a: $($coincide.display_phone_number)  ($($coincide.verified_name))"
+        # Meta entrega sus numeros de prueba con prefijo +1 555.
+        if ("$($coincide.display_phone_number)" -replace '\D', '' -match '^1555') {
+            Ojo 'Ese es el NUMERO DE PRUEBA de Meta, no una linea propia.'
+            Ojo 'Solo puede escribir a los destinatarios registrados a mano (max. 5).'
+        }
+    }
+    elseif ($idsEncontrados.Count) {
+        Ojo 'Ese ID no corresponde a ninguno de los numeros de la WABA.'
+        Ojo 'Probablemente quedo de otra configuracion. Numeros disponibles:'
+        foreach ($p in $nums.Datos.data) {
+            Write-Host "        $($p.id)  ->  $($p.display_phone_number)" -ForegroundColor DarkGray
+        }
     }
 }
 
