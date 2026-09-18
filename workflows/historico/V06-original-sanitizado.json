@@ -1,0 +1,532 @@
+{
+  "name": "MERCAMIO - ChatBOT contable V05",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\n// El WhatsApp Trigger de n8n normalmente entrega contacts, messages y metadata\n// en el nivel principal. Estas alternativas también admiten el webhook crudo de Meta.\nconst payload = input.body ?? input;\nconst value = payload.entry?.[0]?.changes?.[0]?.value ?? payload;\nconst message = value.messages?.[0] ?? input.messages?.[0] ?? {};\nconst contact = value.contacts?.[0] ?? input.contacts?.[0] ?? {};\n\nconst raw = String(\n  message.text?.body ??\n  message.interactive?.button_reply?.title ??\n  message.interactive?.button_reply?.id ??\n  message.interactive?.list_reply?.title ??\n  message.interactive?.list_reply?.id ??\n  input.chatInput ??\n  input.message ??\n  input.text ??\n  ''\n).trim();\n\n// El teléfono del remitente se usa como identificador único de la conversación.\nconst waTo = String(\n  message.from ??\n  contact.wa_id ??\n  input.waTo ??\n  ''\n).replace(/\\D/g, '');\n\n// ID del número empresarial que recibió el mensaje; se reutiliza para responder.\nconst businessPhoneNumberId = String(\n  value.metadata?.phone_number_id ??\n  input.metadata?.phone_number_id ??\n  input.businessPhoneNumberId ??\n  ''\n);\n\nconst sessionId = String(\n  waTo ||\n  input.sessionId ||\n  input.chatSessionId ||\n  input.userId ||\n  'demo-mercamio'\n);\n\n\nconst normalize = (value = '') => String(value)\n  .normalize('NFD')\n  .replace(/[\\u0300-\\u036f]/g, '')\n  .toLowerCase()\n  .trim();\n\n\nconst text = normalize(raw);\nconst store = $getWorkflowStaticData('global');\nstore.sessions ??= {};\nlet session = store.sessions[sessionId] ?? {\n  step: 'inicio',\n  data: {},\n  startedAt: new Date().toISOString(),\n};\n\n\nconst portal = 'https://mercamio.com.co/proveedores/';\nconst fieldLabels = {\n  correo: 'correo electrónico',\n  identificacion: 'número de identificación o NIT',\n  numero_factura: 'número de la factura',\n  comprobante: 'comprobante o número de radicación',\n  tipo_certificado: 'tipo de certificado solicitado',\n  valor_pagado: 'valor pagado',\n  persona_contratante: 'nombre de la persona que contrató el servicio',\n};\n\n\nconst routes = {\n  CLI_RET: {\n    userType: 'Cliente',\n    category: 'Devolución de retenciones',\n    owner: 'RUTA_CLI_RET@pendiente.local',\n    sla: 'Por confirmar',\n    required: ['correo'],\n  },\n  CLI_CAR: {\n    userType: 'Cliente',\n    category: 'Consulta de cartera',\n    owner: 'Responsable de cartera por confirmar',\n    sla: 'Por confirmar',\n    required: ['identificacion', 'correo'],\n  },\n  PRO_PEN: {\n    userType: 'Proveedor de mercancías',\n    category: 'Factura pendiente',\n    owner: 'RUTA_PRO_PEN@pendiente.local',\n    sla: '2 días',\n    required: ['identificacion', 'numero_factura', 'comprobante'],\n  },\n  PRO_CER: {\n    userType: 'Proveedor de mercancías',\n    category: 'Certificados',\n    owner: 'RUTA_PRO_CER@pendiente.local',\n    sla: 'Por confirmar',\n    required: ['identificacion', 'tipo_certificado'],\n  },\n  ACR_DIF: {\n    userType: 'Acreedor de servicios',\n    category: 'Diferencia en valor pagado',\n    owner: 'RUTA_ACR@pendiente.local',\n    sla: '3 días',\n    required: ['identificacion', 'numero_factura', 'valor_pagado'],\n  },\n  ACR_PEN: {\n    userType: 'Acreedor de servicios',\n    category: 'Factura pendiente',\n    owner: 'Triage contabilidad - responsable por confirmar',\n    sla: 'Por confirmar',\n    required: ['identificacion', 'numero_factura', 'persona_contratante'],\n  },\n  ACR_CER: {\n    userType: 'Acreedor de servicios',\n    category: 'Certificados',\n    owner: 'RUTA_ACR@pendiente.local',\n    sla: 'Por confirmar',\n    required: ['identificacion', 'tipo_certificado'],\n  },\n};\n\n\nconst menus = {\n  Cliente: 'Selecciona tu solicitud:\\n1. Devolución de retenciones\\n2. Consulta de cartera',\n  Proveedor: 'Selecciona tu solicitud:\\n1. Pago cancelado\\n2. Factura pendiente\\n3. Certificados',\n  Acreedor: 'Selecciona tu solicitud:\\n1. Diferencia en valor pagado\\n2. Factura pendiente\\n3. Certificados\\n4. Pago cancelado',\n};\n\n\nconst yes = /^(1|si|sí|acepto|de acuerdo|confirmo)$/i.test(raw.trim());\nconst no = /^(2|no|no acepto|rechazo)$/i.test(raw.trim());\nconst validEmail = (value) => /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(value);\n\n\nconst save = () => {\n  session.updatedAt = new Date().toISOString();\n  store.sessions[sessionId] = session;\n};\n\n\nconst startRoute = (code) => {\n  const route = routes[code];\n  session.routeCode = code;\n  session.data.tipo_usuario = route.userType;\n  session.data.categoria = route.category;\n  session.pendingFields = [...route.required];\n  session.currentField = session.pendingFields.shift();\n  session.step = 'collecting';\n  return 'Para continuar con ' + route.category + ', escribe tu ' + fieldLabels[session.currentField] + '.';\n};\n\n\nlet output = '';\nlet action = 'RESPUESTA';\nlet ticket = null;\n\n\nif (text === 'reiniciar' || text === 'nuevo') {\n  session = { step: 'inicio', data: {}, startedAt: new Date().toISOString() };\n}\n\n\nif (session.step === 'inicio') {\n  session.step = 'consentimiento';\n  output = 'Hola, soy el asistente contable de MERCAMIO. Para atender tu solicitud necesitamos usar los datos que compartas únicamente para gestión y trazabilidad del caso. ¿Aceptas el tratamiento de datos?\\n1. Sí, acepto\\n2. No acepto';\n} else if (session.step === 'consentimiento') {\n  if (yes) {\n    session.data.consentimiento = true;\n    session.data.fecha_consentimiento = new Date().toISOString();\n    session.step = 'nombre';\n    output = 'Gracias. ¿Cuál es tu nombre completo?';\n  } else if (no) {\n    session.data.consentimiento = false;\n    session.step = 'finalizado';\n    action = 'CIERRE';\n    output = 'Entendido. No solicitaremos más datos. Puedes comunicarte con el canal de atención definido por MERCAMIO. Escribe REINICIAR si deseas comenzar de nuevo.';\n  } else {\n    output = 'Por favor responde 1 para aceptar o 2 para no aceptar.';\n  }\n} else if (session.step === 'nombre') {\n  if (raw.length < 2) {\n    output = 'Escribe un nombre válido para continuar.';\n  } else {\n    session.data.nombre = raw;\n    session.step = 'tipo_usuario';\n    output = 'Gracias, ' + raw + '. ¿Qué tipo de usuario eres?\\n1. Cliente\\n2. Proveedor de mercancías\\n3. Acreedor de servicios';\n  }\n} else if (session.step === 'tipo_usuario') {\n  let userType = '';\n  if (text === '1' || text.includes('cliente')) userType = 'Cliente';\n  if (text === '2' || text.includes('proveedor')) userType = 'Proveedor';\n  if (text === '3' || text.includes('acreedor')) userType = 'Acreedor';\n\n\n  if (!userType) {\n    output = 'Selecciona 1 Cliente, 2 Proveedor de mercancías o 3 Acreedor de servicios.';\n  } else {\n    session.data.tipo_usuario = userType;\n    session.step = 'categoria';\n    output = menus[userType];\n  }\n} else if (session.step === 'categoria') {\n  const type = session.data.tipo_usuario;\n  if (type === 'Cliente') {\n    if (text === '1' || text.includes('retencion')) output = startRoute('CLI_RET');\n    else if (text === '2' || text.includes('cartera')) output = startRoute('CLI_CAR');\n    else output = menus.Cliente;\n  } else if (type === 'Proveedor') {\n    if (text === '1' || text.includes('pago cancelado')) {\n      session.step = 'finalizado';\n      action = 'CIERRE';\n      output = 'Consulta el estado del pago en el portal de proveedores: ' + portal + '\\nSi necesitas atención humana, escribe REINICIAR y selecciona nuevamente la categoría.';\n    } else if (text === '2' || text.includes('factura')) {\n      session.step = 'proveedor_radicacion';\n      output = '¿La factura ya fue radicada?\\n1. Sí\\n2. No';\n    } else if (text === '3' || text.includes('certificado')) {\n      output = startRoute('PRO_CER');\n    } else {\n      output = menus.Proveedor;\n    }\n  } else if (type === 'Acreedor') {\n    if (text === '1' || text.includes('diferencia')) output = startRoute('ACR_DIF');\n    else if (text === '2' || text.includes('factura')) output = startRoute('ACR_PEN');\n    else if (text === '3' || text.includes('certificado')) output = startRoute('ACR_CER');\n    else if (text === '4' || text.includes('pago cancelado')) {\n      session.step = 'finalizado';\n      action = 'CIERRE';\n      output = 'Consulta el estado del pago en el portal de proveedores: ' + portal + '\\nEscribe REINICIAR para realizar otra solicitud.';\n    } else {\n      output = menus.Acreedor;\n    }\n  }\n} else if (session.step === 'proveedor_radicacion') {\n  if (yes) {\n    output = startRoute('PRO_PEN');\n  } else if (no) {\n    session.step = 'finalizado';\n    action = 'CIERRE';\n    output = 'Primero debes radicar la factura siguiendo las indicaciones del portal: ' + portal + '\\nEscribe REINICIAR cuando quieras iniciar una nueva consulta.';\n  } else {\n    output = 'Responde 1 si ya radicaste la factura o 2 si aún no la has radicado.';\n  }\n} else if (session.step === 'collecting') {\n  const field = session.currentField;\n  if (!raw) {\n    output = 'El dato no puede estar vacío. Escribe tu ' + fieldLabels[field] + '.';\n  } else if (field === 'correo' && !validEmail(raw)) {\n    output = 'El correo no parece válido. Escríbelo nuevamente, por ejemplo: nombre@empresa.com';\n  } else {\n    session.data[field] = raw;\n    if (session.pendingFields.length) {\n      session.currentField = session.pendingFields.shift();\n      output = 'Ahora escribe tu ' + fieldLabels[session.currentField] + '.';\n    } else {\n      const route = routes[session.routeCode];\n      const ticketId = 'MCM-' + Date.now().toString().slice(-8);\n      ticket = {\n        ticket_id: ticketId,\n        session_id: sessionId,\n        fecha_creacion: new Date().toISOString(),\n        estado: 'nuevo',\n        responsable: route.owner,\n        sla: route.sla,\n        ruta: session.routeCode,\n        ...session.data,\n      };\n      store.tickets ??= [];\n      store.tickets.push(ticket);\n      session.ticketId = ticketId;\n      session.step = 'finalizado';\n      action = route.owner.includes('por confirmar') ? 'ESCALAR' : 'TICKET';\n      output = 'Solicitud registrada con el ticket ' + ticketId + '. Categoría: ' + route.category + '. Tiempo estimado: ' + route.sla + '. Escribe REINICIAR para crear otra solicitud.';\n    }\n  }\n} else {\n  output = 'Esta conversación ya terminó. Escribe REINICIAR para crear una nueva solicitud.';\n  action = 'CIERRE';\n}\n\n\nsave();\n\n\nreturn [{\n  json: {\n    ...input,\n    sessionId,\n    waTo,\n    businessPhoneNumberId,\n    action,\n    output,\n    ticket,\n    estado_sesion: session.step,\n    ruta: session.routeCode ?? null,\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1024,
+        352
+      ],
+      "id": "1805b489-e563-4246-9cfa-ebe75c9156c1",
+      "name": "Motor conversacional - 9 rutas"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nreturn [{ json: {\n  output: data.output,\n  action: data.action,\n  sessionId: data.sessionId,\n  waTo: data.waTo,\n  businessPhoneNumberId: data.businessPhoneNumberId,\n  estado_sesion: data.estado_sesion,\n  ruta: data.ruta,\n  ticket: data.ticket,\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -800,
+        352
+      ],
+      "id": "2fd71529-88ec-403b-8976-8d3c10e98869",
+      "name": "Respuesta y ticket estructurado"
+    },
+    {
+      "parameters": {
+        "content": "## 1. Entrada por WhatsApp Business\nEl flujo recibe **Mensajes** mediante WhatsApp Business Platform / Cloud API.\n\nPara probar: mantén el workflow sin publicar, ejecuta el trigger y envía un mensaje al número de prueba de Meta.",
+        "height": 300,
+        "width": 330,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1312,
+        -32
+      ],
+      "id": "bf4070dd-fee3-41e6-8104-229c1059e80b",
+      "name": "Nota - Laboratorio"
+    },
+    {
+      "parameters": {
+        "content": "## 2. Flujo MERCAMIO\n**Inicio común:** bienvenida → consentimiento → nombre → tipo de usuario.\n\n**Ramas:** Cliente, Proveedor de mercancías y Acreedor de servicios.\n\n**Cobertura:** nueve rutas del archivo de proceso.",
+        "height": 300,
+        "width": 380,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -944,
+        -32
+      ],
+      "id": "12026019-cbc6-4d5d-9897-ecb6484e47a3",
+      "name": "Nota - Flujo"
+    },
+    {
+      "parameters": {
+        "content": "## 3. Respuesta al mismo usuario\nEl flujo conserva:\n- **waTo**: teléfono del remitente\n- **businessPhoneNumberId**: número empresarial receptor\n- **output**: texto de respuesta\n\nLas dos ramas terminan en **Responder por WhatsApp Business**.",
+        "height": 300,
+        "width": 360,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -544,
+        -32
+      ],
+      "id": "e71a6258-756b-4e8c-80ed-27930d038acd",
+      "name": "Nota - Salida"
+    },
+    {
+      "parameters": {
+        "content": "## Antes de publicar\n1. Configurar la credencial OAuth2 del trigger.\n2. Configurar la credencial API de WhatsApp Business Cloud para responder.\n3. Confirmar responsables y SLA pendientes.\n4. Probar las nueve rutas con datos ficticios.\n5. Verificar el registro en Google Sheets.\n6. Publicar solo cuando finalicen las pruebas.\n\n**Meta admite un solo webhook por aplicación.**",
+        "height": 390,
+        "width": 430,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        -64
+      ],
+      "id": "338779c9-68de-4093-9b7b-55d3f3f31af9",
+      "name": "Nota - Produccion"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "4531dd5a-fc7e-4c5a-89e8-98d646f22d4a",
+              "leftValue": "={{ $json.ticket }}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -576,
+        352
+      ],
+      "id": "e8ffdaa9-365d-4c30-a64f-6ae062593f53",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $('Respuesta y ticket estructurado').first().json }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -208,
+        352
+      ],
+      "id": "0b5fe9b6-b597-40a8-bf2f-93f05b982e40",
+      "name": "Preparar respuesta sin ticket"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $('Respuesta y ticket estructurado').first().json }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        16,
+        368
+      ],
+      "id": "bc778b2e-f7a6-45a2-91af-904bccadd54d",
+      "name": "Recuperar respuesta tras registro"
+    },
+    {
+      "parameters": {
+        "updates": [
+          "messages"
+        ],
+        "options": {}
+      },
+      "type": "n8n-nodes-base.whatsAppTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1296,
+        368
+      ],
+      "id": "83d305fa-6176-47ab-8199-680e7de08c40",
+      "name": "WhatsApp Business Trigger",
+      "webhookId": "5ddefa4b-95bd-4303-8c54-7a448d1d41de",
+      "credentials": {
+        "whatsAppTriggerApi": {
+          "id": "CRED_WA_TRIGGER_REDACTADO",
+          "name": "WhatsApp OAuth account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "={{ $json.businessPhoneNumberId }}",
+        "recipientPhoneNumber": "={{ $json.waTo }}",
+        "textBody": "={{ $json.output }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1.1,
+      "position": [
+        272,
+        368
+      ],
+      "id": "b09d7f90-6a20-4209-b62d-655fb968000c",
+      "name": "Responder por WhatsApp Business",
+      "webhookId": "b3fb62f3-1b1e-4e30-ba83-ae9de7e28a55",
+      "credentials": {
+        "whatsAppApi": {
+          "id": "CRED_WA_API_REDACTADO",
+          "name": "WhatsApp account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "ID_DE_LA_HOJA_REDACTADO",
+          "mode": "list",
+          "cachedResultName": "MERCAMIO - Registro de solicitudes (Prueba)",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/ID_DE_LA_HOJA_REDACTADO/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Solicitudes",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticket_id": "={{ $json.ticket.ticket_id }}",
+            "session_id": "={{ $json.ticket.session_id }}",
+            "tipo_usuario": "={{ $json.ticket.tipo_usuario }}",
+            "ruta": "={{ $json.ticket.ruta }}",
+            "identificacion": "={{ $json.ticket.identificacion ?? \"\" }}",
+            "comprobante": "={{ $json.ticket.comprobante ?? \"\" }}",
+            "tipo_certificado": "={{ $json.ticket.tipo_certificado ?? \"\" }}",
+            "persona_contratante": "={{ $json.ticket.persona_contratante ?? \"\" }}",
+            "sla": "={{ $json.ticket.sla }}",
+            "fecha_creacion": "={{ $json.ticket.fecha_creacion }}",
+            "estado": "={{ $json.ticket.estado }}",
+            "categoria": "={{ $json.ticket.categoria }}",
+            "nombre": "={{ $json.ticket.nombre }}",
+            "numero_factura": "={{ $json.ticket.numero_factura ?? \"\" }}",
+            "correo": "={{ $json.ticket.correo ?? \"\" }}",
+            "valor_pagado": "={{ $json.ticket.valor_pagado ?? \"\" }}",
+            "responsable": "={{ $json.ticket.responsable }}",
+            "observaciones": "={{ $json.ticket.observaciones ?? \"\" }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "fecha_creacion",
+              "displayName": "fecha_creacion",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "session_id",
+              "displayName": "session_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "estado",
+              "displayName": "estado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tipo_usuario",
+              "displayName": "tipo_usuario",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "categoria",
+              "displayName": "categoria",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ruta",
+              "displayName": "ruta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nombre",
+              "displayName": "nombre",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "identificacion",
+              "displayName": "identificacion",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "numero_factura",
+              "displayName": "numero_factura",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "comprobante",
+              "displayName": "comprobante",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "correo",
+              "displayName": "correo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tipo_certificado",
+              "displayName": "tipo_certificado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "valor_pagado",
+              "displayName": "valor_pagado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "persona_contratante",
+              "displayName": "persona_contratante",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "responsable",
+              "displayName": "responsable",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sla",
+              "displayName": "sla",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "observaciones",
+              "displayName": "observaciones",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -384,
+        512
+      ],
+      "id": "de23859b-9213-438a-8148-cdef5cec64ce",
+      "name": "Append row in sheet1",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "CRED_SHEETS_REDACTADO",
+          "name": "Google Sheets account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Motor conversacional - 9 rutas": {
+      "main": [
+        [
+          {
+            "node": "Respuesta y ticket estructurado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respuesta y ticket estructurado": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Preparar respuesta sin ticket",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Append row in sheet1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Recuperar respuesta tras registro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WhatsApp Business Trigger": {
+      "main": [
+        [
+          {
+            "node": "Motor conversacional - 9 rutas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar respuesta sin ticket": {
+      "main": [
+        [
+          {
+            "node": "Responder por WhatsApp Business",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recuperar respuesta tras registro": {
+      "main": [
+        [
+          {
+            "node": "Responder por WhatsApp Business",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append row in sheet1": {
+      "main": [
+        [
+          {
+            "node": "Preparar respuesta sin ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "5da473f6-9b40-4896-b075-aa4c7592b373",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "INSTANCE_ID_REDACTADO"
+  },
+  "nodeGroups": [],
+  "id": "nhdntz8OGK3mvvl5",
+  "tags": []
+}

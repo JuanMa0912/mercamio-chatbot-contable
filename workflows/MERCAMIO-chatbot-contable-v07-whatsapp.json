@@ -1,0 +1,430 @@
+{
+  "id": "mercamioWa000001",
+  "name": "MERCAMIO - ChatBOT contable V07 (WhatsApp)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "messages"
+        ],
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000010",
+      "name": "WhatsApp Business Trigger",
+      "type": "n8n-nodes-base.whatsAppTrigger",
+      "typeVersion": 1,
+      "position": [
+        -220,
+        0
+      ],
+      "webhookId": "mercamio-whatsapp-v07",
+      "notes": "Escucha \"messages\", que incluye tambien callbacks de estado (sent/delivered/read). El motor los descarta."
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * MERCAMIO - Motor conversacional del chatbot contable (9 rutas)\n * ---------------------------------------------------------------\n * Este archivo es el CUERPO EXACTO del nodo Code \"Motor conversacional\".\n * No se importa con require(): scripts/build-workflow.mjs lo inyecta en el\n * JSON del workflow y tests/harness.mjs lo ejecuta con los globales de n8n\n * simulados. Una sola fuente de verdad para produccion y para las pruebas.\n *\n * Contrato de salida (un item):\n *   { message_id, sessionId, waTo, businessPhoneNumberId, action, output,\n *     has_ticket (boolean), ticket (object, {} si no hay), estado_sesion,\n *     ruta, es_simulacion }\n *\n * Devuelve [] (array vacio) para descartar el evento: n8n detiene la rama y\n * no ejecuta ningun nodo posterior. Se usa para callbacks de estado de Meta y\n * para webhooks reintentados.\n */\n\n// --------------------------- utilidades de entorno ---------------------------\n// $env puede estar bloqueado (N8N_BLOCK_ENV_ACCESS_IN_NODE=true): leerlo nunca\n// debe tumbar la ejecucion.\nconst env = (key, fallback) => {\n  try {\n    const raw = $env[key];\n    return raw === undefined || raw === null || String(raw).trim() === '' ? fallback : raw;\n  } catch (error) {\n    return fallback;\n  }\n};\n\nconst SESSION_TTL_MIN = Number(env('MERCAMIO_SESSION_TTL_MIN', 60)) || 60;\nconst MAX_SESSIONS = Number(env('MERCAMIO_MAX_SESSIONS', 500)) || 500;\nconst MAX_SEEN_IDS = 300;\nconst WHATSAPP_MAX_CHARS = 4000; // el limite real de Meta es 4096\nconst PORTAL = env('MERCAMIO_PORTAL_URL', 'https://mercamio.com.co/proveedores/');\n\n// --------------------------- entrada y normalizacion -------------------------\nconst input = $input.first().json;\nconst payload = input.body ?? input;\n// El WhatsApp Trigger de n8n entrega ya el objeto changes[0].value aplanado.\n// Se admite tambien el webhook crudo de Meta (entry[0].changes[0].value).\nconst value = payload.entry?.[0]?.changes?.[0]?.value ?? payload;\n\nlet message = value.messages?.[0] ?? payload.messages?.[0] ?? null;\nlet esSimulacion = false;\n\n// Entrada del simulador local: { \"from\": \"573001112233\", \"text\": \"hola\" }\nif (!message) {\n  const textoSimulado = payload.text ?? payload.message ?? payload.chatInput ?? payload.mensaje;\n  if (textoSimulado !== undefined && textoSimulado !== null && String(textoSimulado).trim() !== '') {\n    esSimulacion = true;\n    message = {\n      id: String(payload.message_id ?? 'sim-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)),\n      from: String(payload.from ?? payload.waTo ?? 'simulador'),\n      type: 'text',\n      text: { body: String(textoSimulado) },\n    };\n  }\n}\n\n// GUARDA 1: callbacks de estado (sent/delivered/read/failed) y cualquier evento\n// sin mensaje entrante. Sin esta guarda, cada respuesta que envia el bot\n// re-dispara el flujo con waTo vacio y corrompe una sesion compartida.\nif (!message) {\n  return [];\n}\n\nconst contact = value.contacts?.[0] ?? payload.contacts?.[0] ?? {};\n\nconst waTo = String(message.from ?? contact.wa_id ?? payload.waTo ?? '').replace(/\\D/g, '');\nconst businessPhoneNumberId = String(\n  value.metadata?.phone_number_id ??\n  payload.metadata?.phone_number_id ??\n  payload.businessPhoneNumberId ??\n  env('WHATSAPP_PHONE_NUMBER_ID', '')\n);\n\nconst sessionId = String(waTo || payload.sessionId || (esSimulacion ? 'simulador' : '') || 'sin-remitente');\n\n// --------------------------- estado persistente ------------------------------\n// OJO: $getWorkflowStaticData solo se GUARDA en ejecuciones de produccion\n// (workflow activo). Con \"Execute workflow\" los cambios se descartan y el bot\n// parece reiniciarse en cada mensaje. Ver docs/06-pruebas.md.\nconst store = $getWorkflowStaticData('global');\nstore.sessions ??= {};\nstore.seen ??= [];\n\n// GUARDA 2: idempotencia. Meta reintenta el webhook si no recibe 200 a tiempo;\n// sin esto la conversacion avanza dos pasos con un solo mensaje del usuario.\nconst messageId = String(message.id ?? '');\nif (messageId && store.seen.includes(messageId)) {\n  return [];\n}\nif (messageId) {\n  store.seen.push(messageId);\n  if (store.seen.length > MAX_SEEN_IDS) {\n    store.seen = store.seen.slice(-MAX_SEEN_IDS);\n  }\n}\n\n// Purga por TTL: una sesion abandonada no debe revivir a medio camino dias\n// despues, pidiendo un dato sin contexto.\nconst ahoraMs = Date.now();\nconst ttlMs = SESSION_TTL_MIN * 60 * 1000;\nfor (const [id, guardada] of Object.entries(store.sessions)) {\n  const marca = Date.parse(guardada?.updatedAt ?? guardada?.startedAt ?? 0);\n  if (!Number.isFinite(marca) || ahoraMs - marca > ttlMs) {\n    delete store.sessions[id];\n  }\n}\n\n// Tope de tamano: static data se serializa dentro de la fila del workflow en la\n// base de datos y se lee/escribe en CADA ejecucion. Sin tope crece sin limite.\nconst ids = Object.keys(store.sessions);\nif (ids.length > MAX_SESSIONS) {\n  ids\n    .sort((a, b) => Date.parse(store.sessions[a]?.updatedAt ?? 0) - Date.parse(store.sessions[b]?.updatedAt ?? 0))\n    .slice(0, ids.length - MAX_SESSIONS)\n    .forEach((id) => delete store.sessions[id]);\n}\n\nconst nuevaSesion = () => ({ step: 'inicio', data: {}, startedAt: new Date().toISOString() });\nlet session = store.sessions[sessionId] ?? nuevaSesion();\n\nconst save = () => {\n  session.updatedAt = new Date().toISOString();\n  store.sessions[sessionId] = session;\n};\n\n// --------------------------- texto del mensaje -------------------------------\nconst TIPOS_SOPORTADOS = new Set(['text', 'interactive', 'button']);\nconst tipoMensaje = String(message.type ?? 'text');\n\nconst raw = String(\n  message.text?.body ??\n  message.button?.text ??\n  message.interactive?.button_reply?.title ??\n  message.interactive?.button_reply?.id ??\n  message.interactive?.list_reply?.title ??\n  message.interactive?.list_reply?.id ??\n  ''\n).trim();\n\n// GUARDA 3: audio, imagen, documento, ubicacion, sticker o reaccion. Antes\n// llegaban con raw vacio y empujaban la maquina de estados sin contenido.\nif (!TIPOS_SOPORTADOS.has(tipoMensaje) || raw === '') {\n  save();\n  return [{\n    json: {\n      message_id: messageId,\n      sessionId,\n      waTo,\n      businessPhoneNumberId,\n      action: 'NO_SOPORTADO',\n      output: 'Por ahora solo puedo leer mensajes de texto. Escribe tu solicitud en texto, por favor.',\n      has_ticket: false,\n      ticket: {},\n      estado_sesion: session.step,\n      ruta: session.routeCode ?? null,\n      es_simulacion: esSimulacion,\n    },\n  }];\n}\n\nconst normalize = (texto = '') => String(texto)\n  .normalize('NFD')\n  .replace(/[̀-ͯ]/g, '')\n  .toLowerCase()\n  .trim();\n\nconst text = normalize(raw);\n\n// --------------------------- catalogo de rutas -------------------------------\n// Los correos reales NO viven en el repositorio: se inyectan por la variable de\n// entorno MERCAMIO_ROUTES_JSON (ver .env.example).\nconst USER_TYPES = {\n  Cliente: 'Cliente',\n  Proveedor: 'Proveedor de mercancias',\n  Acreedor: 'Acreedor de servicios',\n};\n\nconst fieldLabels = {\n  correo: 'correo electronico',\n  identificacion: 'numero de identificacion o NIT',\n  numero_factura: 'numero de la factura',\n  comprobante: 'comprobante o numero de radicacion',\n  tipo_certificado: 'tipo de certificado solicitado',\n  valor_pagado: 'valor pagado',\n  persona_contratante: 'nombre de la persona que contrato el servicio',\n};\n\n// `escalate: true` marca las rutas sin responsable definido. La version\n// anterior lo deducia buscando la cadena \"por confirmar\" DENTRO del correo del\n// responsable: el dia que se asigna un correo real, la ruta deja de escalar sin\n// que nadie lo note. Ahora es un campo explicito.\nconst routes = {\n  CLI_RET: { userKey: 'Cliente', category: 'Devolucion de retenciones', owner: 'retenciones@pendiente.local', sla: 'Por confirmar', required: ['correo'] },\n  CLI_CAR: { userKey: 'Cliente', category: 'Consulta de cartera', owner: 'Responsable de cartera por confirmar', escalate: true, sla: 'Por confirmar', required: ['identificacion', 'correo'] },\n  PRO_PEN: { userKey: 'Proveedor', category: 'Factura pendiente', owner: 'proveedores.facturas@pendiente.local', sla: '2 dias', required: ['identificacion', 'numero_factura', 'comprobante'] },\n  PRO_CER: { userKey: 'Proveedor', category: 'Certificados', owner: 'proveedores.certificados@pendiente.local', sla: 'Por confirmar', required: ['identificacion', 'tipo_certificado'] },\n  ACR_DIF: { userKey: 'Acreedor', category: 'Diferencia en valor pagado', owner: 'acreedores.diferencias@pendiente.local', sla: '3 dias', required: ['identificacion', 'numero_factura', 'valor_pagado'] },\n  ACR_PEN: { userKey: 'Acreedor', category: 'Factura pendiente', owner: 'Triage contabilidad - responsable por confirmar', escalate: true, sla: 'Por confirmar', required: ['identificacion', 'numero_factura', 'persona_contratante'] },\n  ACR_CER: { userKey: 'Acreedor', category: 'Certificados', owner: 'acreedores.certificados@pendiente.local', sla: 'Por confirmar', required: ['identificacion', 'tipo_certificado'] },\n};\n\nconst overrideRutas = env('MERCAMIO_ROUTES_JSON', '');\nif (overrideRutas) {\n  try {\n    const parsed = typeof overrideRutas === 'string' ? JSON.parse(overrideRutas) : overrideRutas;\n    for (const [codigo, parche] of Object.entries(parsed)) {\n      if (routes[codigo]) routes[codigo] = { ...routes[codigo], ...parche };\n    }\n  } catch (error) {\n    // Un JSON malformado en la variable no debe tumbar el bot: se usan los\n    // valores por defecto y queda el rastro en el log de la ejecucion.\n    console.warn('MERCAMIO_ROUTES_JSON invalido, se usan valores por defecto:', error.message);\n  }\n}\n\nconst menus = {\n  Cliente: 'Selecciona tu solicitud:\\n1. Devolucion de retenciones\\n2. Consulta de cartera',\n  Proveedor: 'Selecciona tu solicitud:\\n1. Pago cancelado\\n2. Factura pendiente\\n3. Certificados',\n  Acreedor: 'Selecciona tu solicitud:\\n1. Diferencia en valor pagado\\n2. Factura pendiente\\n3. Certificados\\n4. Pago cancelado',\n};\n\nconst yes = /^(1|si|sí|acepto|de acuerdo|confirmo)$/i.test(raw);\nconst no = /^(2|no|no acepto|rechazo)$/i.test(raw);\nconst validEmail = (valor) => /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(valor);\n\nconst startRoute = (code) => {\n  const route = routes[code];\n  session.routeCode = code;\n  session.userKey = route.userKey;\n  session.data.tipo_usuario = USER_TYPES[route.userKey];\n  session.data.categoria = route.category;\n  session.pendingFields = [...route.required];\n  session.currentField = session.pendingFields.shift();\n  session.step = 'collecting';\n  return 'Para continuar con ' + route.category + ', escribe tu ' + fieldLabels[session.currentField] + '.';\n};\n\n// --------------------------- maquina de estados ------------------------------\nlet output = '';\nlet action = 'RESPUESTA';\nlet ticket = null;\n\nif (text === 'reiniciar' || text === 'nuevo') {\n  session = nuevaSesion();\n}\n\nif (session.step === 'inicio') {\n  session.step = 'consentimiento';\n  output = 'Hola, soy el asistente contable de MERCAMIO. Para atender tu solicitud necesitamos usar los datos que compartas unicamente para gestion y trazabilidad del caso. Aceptas el tratamiento de datos?\\n1. Si, acepto\\n2. No acepto';\n} else if (session.step === 'consentimiento') {\n  if (yes) {\n    session.data.consentimiento = true;\n    session.data.fecha_consentimiento = new Date().toISOString();\n    session.step = 'nombre';\n    output = 'Gracias. Cual es tu nombre completo?';\n  } else if (no) {\n    session.data.consentimiento = false;\n    session.step = 'finalizado';\n    action = 'CIERRE';\n    output = 'Entendido. No solicitaremos mas datos. Puedes comunicarte con el canal de atencion definido por MERCAMIO. Escribe REINICIAR si deseas comenzar de nuevo.';\n  } else {\n    output = 'Por favor responde 1 para aceptar o 2 para no aceptar.';\n  }\n} else if (session.step === 'nombre') {\n  if (raw.length < 2) {\n    output = 'Escribe un nombre valido para continuar.';\n  } else {\n    session.data.nombre = raw;\n    session.step = 'tipo_usuario';\n    output = 'Gracias, ' + raw + '. Que tipo de usuario eres?\\n1. Cliente\\n2. Proveedor de mercancias\\n3. Acreedor de servicios';\n  }\n} else if (session.step === 'tipo_usuario') {\n  let userKey = '';\n  if (text === '1' || text.includes('cliente')) userKey = 'Cliente';\n  else if (text === '2' || text.includes('proveedor')) userKey = 'Proveedor';\n  else if (text === '3' || text.includes('acreedor')) userKey = 'Acreedor';\n\n  if (!userKey) {\n    output = 'Selecciona 1 Cliente, 2 Proveedor de mercancias o 3 Acreedor de servicios.';\n  } else {\n    session.userKey = userKey;\n    session.data.tipo_usuario = USER_TYPES[userKey];\n    session.step = 'categoria';\n    output = menus[userKey];\n  }\n} else if (session.step === 'categoria') {\n  const userKey = session.userKey;\n  if (userKey === 'Cliente') {\n    if (text === '1' || text.includes('retencion')) output = startRoute('CLI_RET');\n    else if (text === '2' || text.includes('cartera')) output = startRoute('CLI_CAR');\n    else output = menus.Cliente;\n  } else if (userKey === 'Proveedor') {\n    if (text === '1' || text.includes('pago cancelado')) {\n      session.step = 'finalizado';\n      action = 'CIERRE';\n      output = 'Consulta el estado del pago en el portal de proveedores: ' + PORTAL + '\\nSi necesitas atencion humana, escribe REINICIAR y selecciona nuevamente la categoria.';\n    } else if (text === '2' || text.includes('factura')) {\n      session.step = 'proveedor_radicacion';\n      output = 'La factura ya fue radicada?\\n1. Si\\n2. No';\n    } else if (text === '3' || text.includes('certificado')) {\n      output = startRoute('PRO_CER');\n    } else {\n      output = menus.Proveedor;\n    }\n  } else if (userKey === 'Acreedor') {\n    if (text === '1' || text.includes('diferencia')) output = startRoute('ACR_DIF');\n    else if (text === '2' || text.includes('factura')) output = startRoute('ACR_PEN');\n    else if (text === '3' || text.includes('certificado')) output = startRoute('ACR_CER');\n    else if (text === '4' || text.includes('pago cancelado')) {\n      session.step = 'finalizado';\n      action = 'CIERRE';\n      output = 'Consulta el estado del pago en el portal de proveedores: ' + PORTAL + '\\nEscribe REINICIAR para realizar otra solicitud.';\n    } else {\n      output = menus.Acreedor;\n    }\n  } else {\n    // Sesion sin userKey: viene de una version anterior del motor.\n    session.step = 'tipo_usuario';\n    output = 'Necesito confirmar tu perfil. Que tipo de usuario eres?\\n1. Cliente\\n2. Proveedor de mercancias\\n3. Acreedor de servicios';\n  }\n} else if (session.step === 'proveedor_radicacion') {\n  if (yes) {\n    output = startRoute('PRO_PEN');\n  } else if (no) {\n    session.step = 'finalizado';\n    action = 'CIERRE';\n    output = 'Primero debes radicar la factura siguiendo las indicaciones del portal: ' + PORTAL + '\\nEscribe REINICIAR cuando quieras iniciar una nueva consulta.';\n  } else {\n    output = 'Responde 1 si ya radicaste la factura o 2 si aun no la has radicado.';\n  }\n} else if (session.step === 'collecting') {\n  const field = session.currentField;\n  if (!field) {\n    // Defensa: sesion inconsistente tras un cambio de version del motor.\n    session.step = 'tipo_usuario';\n    output = 'Perdi el hilo de la solicitud. Que tipo de usuario eres?\\n1. Cliente\\n2. Proveedor de mercancias\\n3. Acreedor de servicios';\n  } else if (field === 'correo' && !validEmail(raw)) {\n    output = 'El correo no parece valido. Escribelo nuevamente, por ejemplo: nombre@empresa.com';\n  } else {\n    session.data[field] = raw;\n    if (session.pendingFields.length) {\n      session.currentField = session.pendingFields.shift();\n      output = 'Ahora escribe tu ' + fieldLabels[session.currentField] + '.';\n    } else {\n      const route = routes[session.routeCode];\n      const ticketId = 'MCM-' + Date.now().toString().slice(-8);\n      // Ticket con esquema FIJO: las columnas de Google Sheets se mapean una a\n      // una y no pueden depender de que la ruta haya pedido o no cada campo.\n      ticket = {\n        ticket_id: ticketId,\n        session_id: sessionId,\n        fecha_creacion: new Date().toISOString(),\n        estado: 'nuevo',\n        responsable: route.owner,\n        sla: route.sla,\n        ruta: session.routeCode,\n        tipo_usuario: session.data.tipo_usuario ?? '',\n        categoria: session.data.categoria ?? '',\n        nombre: session.data.nombre ?? '',\n        identificacion: session.data.identificacion ?? '',\n        numero_factura: session.data.numero_factura ?? '',\n        comprobante: session.data.comprobante ?? '',\n        correo: session.data.correo ?? '',\n        tipo_certificado: session.data.tipo_certificado ?? '',\n        valor_pagado: session.data.valor_pagado ?? '',\n        persona_contratante: session.data.persona_contratante ?? '',\n        observaciones: session.data.observaciones ?? '',\n      };\n      // El registro autoritativo del ticket es Google Sheets. La version\n      // anterior tambien lo acumulaba en static data (store.tickets): fuga de\n      // memoria permanente que nadie leia nunca.\n      session.ticketId = ticketId;\n      session.step = 'finalizado';\n      action = route.escalate === true || String(route.owner).toLowerCase().includes('por confirmar')\n        ? 'ESCALAR'\n        : 'TICKET';\n      output = 'Solicitud registrada con el ticket ' + ticketId + '. Categoria: ' + route.category + '. Tiempo estimado: ' + route.sla + '. Escribe REINICIAR para crear otra solicitud.';\n    }\n  }\n} else {\n  output = 'Esta conversacion ya termino. Escribe REINICIAR para crear una nueva solicitud.';\n  action = 'CIERRE';\n}\n\n// Defensa final: un output vacio hace fallar el envio en la API de Meta con un\n// error poco descriptivo (#131009). Nunca debe salir vacio.\nif (!output) {\n  output = 'No entendi tu mensaje. Escribe REINICIAR para comenzar de nuevo.';\n  action = 'FALLBACK';\n}\nif (output.length > WHATSAPP_MAX_CHARS) {\n  output = output.slice(0, WHATSAPP_MAX_CHARS - 3) + '...';\n}\n\nsave();\n\nreturn [{\n  json: {\n    message_id: messageId,\n    sessionId,\n    waTo,\n    businessPhoneNumberId,\n    action,\n    output,\n    // Bandera booleana para el nodo If. La version anterior evaluaba `ticket`\n    // con el operador object/empty sobre un valor null, lo que rompe la\n    // ejecucion cuando typeValidation esta en strict.\n    has_ticket: ticket !== null,\n    ticket: ticket ?? {},\n    estado_sesion: session.step,\n    ruta: session.routeCode ?? null,\n    es_simulacion: esSimulacion,\n  },\n}];\n"
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Motor conversacional - 9 rutas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "onError": "stopWorkflow",
+      "notes": "Codigo generado desde src/nodes/01-motor-conversacional.js. No editar en la UI: los cambios se pierden en el siguiente build."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b2000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.has_ticket }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Tiene ticket?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        0
+      ],
+      "notes": "TRUE = se completo la solicitud y hay ticket -> se registra en Sheets. FALSE = solo responder."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.MERCAMIO_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Solicitudes",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticket_id": "={{ $json.ticket.ticket_id }}",
+            "fecha_creacion": "={{ $json.ticket.fecha_creacion }}",
+            "session_id": "={{ $json.ticket.session_id }}",
+            "estado": "={{ $json.ticket.estado }}",
+            "tipo_usuario": "={{ $json.ticket.tipo_usuario }}",
+            "categoria": "={{ $json.ticket.categoria }}",
+            "ruta": "={{ $json.ticket.ruta }}",
+            "nombre": "={{ $json.ticket.nombre }}",
+            "identificacion": "={{ $json.ticket.identificacion }}",
+            "numero_factura": "={{ $json.ticket.numero_factura }}",
+            "comprobante": "={{ $json.ticket.comprobante }}",
+            "correo": "={{ $json.ticket.correo }}",
+            "tipo_certificado": "={{ $json.ticket.tipo_certificado }}",
+            "valor_pagado": "={{ $json.ticket.valor_pagado }}",
+            "persona_contratante": "={{ $json.ticket.persona_contratante }}",
+            "responsable": "={{ $json.ticket.responsable }}",
+            "sla": "={{ $json.ticket.sla }}",
+            "observaciones": "={{ $json.ticket.observaciones }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "fecha_creacion",
+              "displayName": "fecha_creacion",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "session_id",
+              "displayName": "session_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "estado",
+              "displayName": "estado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tipo_usuario",
+              "displayName": "tipo_usuario",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "categoria",
+              "displayName": "categoria",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ruta",
+              "displayName": "ruta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nombre",
+              "displayName": "nombre",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "identificacion",
+              "displayName": "identificacion",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "numero_factura",
+              "displayName": "numero_factura",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "comprobante",
+              "displayName": "comprobante",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "correo",
+              "displayName": "correo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tipo_certificado",
+              "displayName": "tipo_certificado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "valor_pagado",
+              "displayName": "valor_pagado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "persona_contratante",
+              "displayName": "persona_contratante",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "responsable",
+              "displayName": "responsable",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sla",
+              "displayName": "sla",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "observaciones",
+              "displayName": "observaciones",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Registrar solicitud en Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        440,
+        -100
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Requiere credencial Google Sheets OAuth2 y la variable MERCAMIO_SHEET_ID. La hoja debe llamarse \"Solicitudes\"."
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * MERCAMIO - Recuperar respuesta tras registrar el ticket\n * -------------------------------------------------------\n * Cuerpo del nodo Code \"Recuperar respuesta tras registro\".\n *\n * Por que existe: el nodo de Google Sheets devuelve como salida la FILA que\n * acaba de escribir, no el item que recibio. Si se conecta Sheets directo al\n * envio de WhatsApp, el nodo de envio recibe { ticket_id, nombre, ... } y no\n * encuentra ni `output` ni `waTo`, y falla.\n *\n * Este nodo vuelve a leer el item original del motor conversacional.\n */\nreturn [{ json: $('Motor conversacional - 9 rutas').first().json }];\n"
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Recuperar respuesta tras registro",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        -100
+      ],
+      "notes": "Codigo generado desde src/nodes/02-recuperar-respuesta.js."
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "={{ $json.businessPhoneNumberId }}",
+        "recipientPhoneNumber": "={{ $json.waTo }}",
+        "textBody": "={{ $json.output }}",
+        "additionalFields": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000011",
+      "name": "Responder por WhatsApp Business",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        0
+      ],
+      "notes": "Requiere credencial WhatsApp API (token permanente del System User)."
+    },
+    {
+      "parameters": {
+        "content": "## Flujo corregido (V07)\n\n1. El trigger entrega el evento crudo de Meta.\n2. El **motor** descarta callbacks de estado y webhooks repetidos, y decide la respuesta.\n3. El **If** usa la bandera booleana `has_ticket` (antes evaluaba `ticket` como objeto y rompia con `null`).\n4. Solo la rama TRUE escribe en Sheets. Antes estaba invertida.\n5. Una sola ruta llega al envio: antes el mensaje salia duplicado.",
+        "height": 260,
+        "width": 460,
+        "color": 4
+      },
+      "id": "a1000000-0000-4000-8000-0000000000n1",
+      "name": "Nota - 00n1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Antes de activar\n\n- Variables `MERCAMIO_SHEET_ID` y `MERCAMIO_ROUTES_JSON` definidas en `.env`.\n- La hoja de calculo tiene la pestana **Solicitudes** con los encabezados de `sheets/plantilla-solicitudes.csv`.\n- `WEBHOOK_URL` apunta a la URL publica del tunel.\n- **El workflow debe quedar ACTIVO**: en modo prueba n8n descarta el static data y el bot saluda de nuevo en cada mensaje.",
+        "height": 260,
+        "width": 420,
+        "color": 3
+      },
+      "id": "a1000000-0000-4000-8000-0000000000n2",
+      "name": "Nota - 00n2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        240,
+        -320
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "WhatsApp Business Trigger": {
+      "main": [
+        [
+          {
+            "node": "Motor conversacional - 9 rutas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Motor conversacional - 9 rutas": {
+      "main": [
+        [
+          {
+            "node": "Tiene ticket?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tiene ticket?": {
+      "main": [
+        [
+          {
+            "node": "Registrar solicitud en Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder por WhatsApp Business",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar solicitud en Sheets": {
+      "main": [
+        [
+          {
+            "node": "Recuperar respuesta tras registro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recuperar respuesta tras registro": {
+      "main": [
+        [
+          {
+            "node": "Responder por WhatsApp Business",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "tags": []
+}

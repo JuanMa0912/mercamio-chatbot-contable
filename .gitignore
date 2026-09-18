@@ -1,0 +1,60 @@
+# ───────────── Claude Code (se maneja SOLO en local, nunca se publica) ─────────────
+.claude/
+.claude.json
+CLAUDE.md
+.mcp.json
+
+# ───────────── Secretos y configuracion sensible ─────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials/
+secrets/
+
+# Exportaciones de credenciales de n8n (contienen tokens en claro)
+n8n-credentials*.json
+credenciales*.json
+
+# ───────────── Datos locales de n8n / Docker ─────────────
+data/
+volumes/
+pgdata/
+*.sqlite
+*.sqlite3
+database.sqlite
+
+# ───────────── Node ─────────────
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log
+.npm/
+
+# ───────────── Sistema operativo ─────────────
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
+
+# ───────────── Editores ─────────────
+.vscode/
+.idea/
+*.swp
+*~
+
+# ───────────── Artefactos de trabajo ─────────────
+tmp/
+temp/
+logs/
+*.log
+backups/
+exports/
+
+# El JSON original lleva correos internos e IDs de credenciales reales.
+# Se conserva en local; en el repositorio va la version sanitizada.
+workflows/historico/V06-original-CON-DATOS-REALES.json

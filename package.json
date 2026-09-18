@@ -1,0 +1,16 @@
+{
+  "name": "mercamio-chatbot-contable",
+  "version": "7.0.0",
+  "private": true,
+  "description": "ChatBOT contable de MERCAMIO sobre n8n autoalojado: motor conversacional de 9 rutas, WhatsApp Business y registro en Google Sheets.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/motor.test.mjs",
+    "build": "node scripts/build-workflow.mjs",
+    "verify": "node --test tests/motor.test.mjs && node scripts/build-workflow.mjs"
+  },
+  "license": "UNLICENSED"
+}

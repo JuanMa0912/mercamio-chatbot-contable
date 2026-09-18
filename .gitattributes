@@ -1,0 +1,15 @@
+# Normalizacion de fin de linea. Sin esto, en Windows los .sh y los archivos
+# que se montan dentro del contenedor Linux llegan con CRLF y fallan.
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+*.png binary
+*.jpg binary
+*.pdf binary
+
+# Los JSON de los workflows son artefactos generados: el diff completo en cada
+# build es ruido en las revisiones.
+workflows/*.json linguist-generated=true -diff

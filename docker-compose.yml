@@ -1,0 +1,156 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# MERCAMIO - ChatBOT contable | n8n autoalojado en local
+# ─────────────────────────────────────────────────────────────────────────────
+# Arranque:   docker compose up -d
+# Logs:       docker compose logs -f n8n
+# Apagado:    docker compose down          (conserva los datos)
+# Borrado:    docker compose down -v       (BORRA workflows y credenciales)
+#
+# Los nombres de contenedor y de volumen llevan prefijo "mercamio-" a proposito:
+# en esta maquina ya existe un contenedor "n8n" y un volumen "n8n_data" de otro
+# proyecto y NO deben tocarse.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: mercamio-chatbot-contable
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mercamio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?define POSTGRES_USER en .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-n8n}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Sin puertos publicados: la base solo se alcanza desde la red de compose.
+    # Para inspeccionarla usa el perfil "tools" (adminer) o docker compose exec.
+    healthcheck:
+      # La forma corta (pg_isready sin -U) falla cuando el usuario no es
+      # "postgres" y deja el healthcheck en unhealthy para siempre.
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -q']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-1.117.2}
+    container_name: mercamio-n8n
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - '${N8N_PORT_HOST:-5678}:5678'
+    environment:
+      # ── Base de datos ──────────────────────────────────────────────────────
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-n8n}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+
+      # ── Clave de cifrado de credenciales ───────────────────────────────────
+      # CRITICO: si cambia, TODAS las credenciales guardadas quedan ilegibles.
+      # Guardala en el gestor de contraseñas antes de seguir.
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?define N8N_ENCRYPTION_KEY en .env}
+
+      # ── Acceso y URL publica ───────────────────────────────────────────────
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      # WEBHOOK_URL define la URL que n8n muestra e informa a Meta/Google.
+      # En local sin tunel: http://localhost:5678/
+      # Con tunel: la URL https del tunel (ver docs/03-webhook-whatsapp-tunel.md)
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678/}
+      N8N_EDITOR_BASE_URL: ${WEBHOOK_URL:-http://localhost:5678/}
+      # En http n8n marca la cookie de sesion como Secure y el navegador la
+      # descarta: el login entra en bucle. En local hay que desactivarlo.
+      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-false}
+      N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-0}
+
+      # ── Zona horaria ───────────────────────────────────────────────────────
+      GENERIC_TIMEZONE: ${TZ:-America/Bogota}
+      TZ: ${TZ:-America/Bogota}
+
+      # ── Comportamiento de los nodos Code ───────────────────────────────────
+      # El motor conversacional lee $env para los responsables y el ID de la
+      # hoja. Si esto se pone en true, el motor cae a sus valores por defecto.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: 'false'
+      NODE_FUNCTION_ALLOW_BUILTIN: '*'
+      # Ejecutores de tareas en proceso aparte: es el modo recomendado desde
+      # n8n 1.7x y evita el aviso de deprecacion en el arranque.
+      N8N_RUNNERS_ENABLED: 'true'
+
+      # ── Retencion de ejecuciones ───────────────────────────────────────────
+      # El workflow guarda los datos de todas las ejecuciones para depurar.
+      # Sin poda, la tabla execution_data crece hasta llenar el disco.
+      EXECUTIONS_DATA_PRUNE: 'true'
+      EXECUTIONS_DATA_MAX_AGE: ${EXECUTIONS_DATA_MAX_AGE:-336}
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: ${EXECUTIONS_DATA_PRUNE_MAX_COUNT:-10000}
+
+      # ── Varios ─────────────────────────────────────────────────────────────
+      N8N_DIAGNOSTICS_ENABLED: 'false'
+      N8N_VERSION_NOTIFICATIONS_ENABLED: 'true'
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: 'true'
+      N8N_LOG_LEVEL: ${N8N_LOG_LEVEL:-info}
+      # Este proyecto no usa el nodo Git. Desactivarlo quita el aviso de
+      # deprecacion del arranque y cierra una via de acceso innecesaria.
+      N8N_GIT_NODE_DISABLE_BARE_REPOS: 'true'
+
+      # ── Configuracion del chatbot (la lee el nodo Code via $env) ───────────
+      MERCAMIO_SHEET_ID: ${MERCAMIO_SHEET_ID:-}
+      MERCAMIO_ROUTES_JSON: ${MERCAMIO_ROUTES_JSON:-}
+      MERCAMIO_PORTAL_URL: ${MERCAMIO_PORTAL_URL:-https://mercamio.com.co/proveedores/}
+      MERCAMIO_SESSION_TTL_MIN: ${MERCAMIO_SESSION_TTL_MIN:-60}
+      MERCAMIO_MAX_SESSIONS: ${MERCAMIO_MAX_SESSIONS:-500}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      # Solo lectura: los workflows se importan desde aqui, n8n no los reescribe.
+      - ./workflows:/workflows:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:5678/healthz || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Perfil "tunnel": expone n8n en una URL publica https para que Meta pueda
+  # entregar el webhook de WhatsApp. Requiere TUNNEL_TOKEN en .env.
+  #   docker compose --profile tunnel up -d
+  # ───────────────────────────────────────────────────────────────────────────
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: mercamio-cloudflared
+    restart: unless-stopped
+    profiles: ['tunnel']
+    depends_on:
+      - n8n
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:-}
+    # Sin puertos: solo abre la conexion de salida hacia Cloudflare.
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Perfil "tools": visor de la base de datos para depurar.
+  #   docker compose --profile tools up -d   ->   http://localhost:8080
+  # ───────────────────────────────────────────────────────────────────────────
+  adminer:
+    image: adminer:5
+    container_name: mercamio-adminer
+    restart: unless-stopped
+    profiles: ['tools']
+    depends_on:
+      - postgres
+    ports:
+      - '${ADMINER_PORT_HOST:-8080}:8080'
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+
+volumes:
+  postgres_data:
+    name: mercamio_postgres_data
+  n8n_data:
+    name: mercamio_n8n_data
