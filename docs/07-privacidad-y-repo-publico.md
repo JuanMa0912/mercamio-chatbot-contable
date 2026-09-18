@@ -117,6 +117,24 @@ instrucciones del proyecto con el equipo, quita esa línea.
 
 ---
 
+## Primera barrera: el hook de pre-commit
+
+Las comprobaciones de abajo son manuales y hay que acordarse de hacerlas. El
+hook de [.githooks/pre-commit](../.githooks/pre-commit) no se olvida: revisa
+las lineas anadidas de cada commit y lo bloquea si encuentra un secreto.
+
+```powershell
+git config core.hooksPath .githooks   # una vez por clon
+```
+
+Lo mas util que hace es buscar **los valores literales de tu `.env`**. Si una
+cadena esta en tu `.env` y aparece en un commit, es una fuga sin ambiguedad
+posible — cero falsos positivos.
+
+No cubre lo que ya esta en el historial. Para eso, lo de abajo.
+
+---
+
 ## Verificar antes del push
 
 Ejecuta esto y **lee la salida**. No des el push si algo aparece.

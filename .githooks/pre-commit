@@ -1,0 +1,120 @@
+#!/bin/sh
+#
+# MERCAMIO - Bloqueo de secretos antes de cada commit
+# ---------------------------------------------------
+# Este repositorio es PUBLICO. Un secreto que entre en un commit queda en el
+# historial aunque se borre despues: hay que reescribir la historia y rotar lo
+# expuesto. Sale mucho mas barato impedirlo aqui.
+#
+# Se revisan SOLO las lineas anadidas de lo que esta en el area de preparacion.
+#
+# Se instala con:
+#     git config core.hooksPath .githooks
+# (ya hecho en esta copia; quien clone el repositorio debe ejecutarlo una vez)
+#
+# Para saltarlo en un caso justificado:  git commit --no-verify
+# Si te ves usando --no-verify, para y mira por que salta.
+
+set -u
+
+RAIZ=$(git rev-parse --show-toplevel)
+FALLOS=0
+
+rojo()  { printf '\033[31m%s\033[0m\n' "$1"; }
+gris()  { printf '\033[90m%s\033[0m\n' "$1"; }
+
+reportar() {
+    if [ "$FALLOS" -eq 0 ]; then
+        echo ""
+        rojo "=============================================================="
+        rojo " COMMIT BLOQUEADO: posible secreto en los cambios preparados"
+        rojo "=============================================================="
+    fi
+    FALLOS=$((FALLOS + 1))
+    echo ""
+    rojo "  $1"
+    shift
+    for l in "$@"; do gris "      $l"; done
+}
+
+# ---------------------------------------------------------------------------
+# 1. Archivos que nunca deben entrar, aunque .gitignore falle o se use -f
+# ---------------------------------------------------------------------------
+PROHIBIDOS=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|/)\.env$|(^|/)\.env\.[^e]|CON-DATOS-REALES|n8n-credentials.*\.json|credenciales.*\.json|(^|/)\.claude/|\.pem$|\.key$|\.p12$' || true)
+if [ -n "$PROHIBIDOS" ]; then
+    reportar "Archivos que no pueden versionarse:" $PROHIBIDOS \
+        "" "Si fue sin querer:  git restore --staged <archivo>"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Los valores REALES de .env, buscados literalmente
+#
+# Es la comprobacion mas fiable y sin falsos positivos: si una cadena esta en
+# tu .env y aparece en un commit, es una fuga, sin ambiguedad.
+# ---------------------------------------------------------------------------
+ANADIDO=$(git diff --cached --diff-filter=ACMR -U0 | grep '^+' | grep -v '^+++' || true)
+
+if [ -n "$ANADIDO" ] && [ -f "$RAIZ/.env" ]; then
+    # Solo claves que llevan secretos; se ignoran valores cortos y los de ejemplo.
+    while IFS='=' read -r CLAVE VALOR; do
+        case "$CLAVE" in
+            POSTGRES_PASSWORD|N8N_ENCRYPTION_KEY|MERCAMIO_SHEET_ID|MERCAMIO_ROUTES_JSON|\
+            WHATSAPP_TOKEN|WHATSAPP_APP_SECRET|WHATSAPP_APP_ID|WHATSAPP_WABA_ID|\
+            WHATSAPP_PHONE_NUMBER_ID|TUNNEL_TOKEN) ;;
+            *) continue ;;
+        esac
+        [ -z "${VALOR:-}" ] && continue
+        [ "${#VALOR}" -lt 12 ] && continue
+        case "$VALOR" in
+            CAMBIA_ESTA_CLAVE*|*ejemplo*|*EJEMPLO*|*FICTICIO*|*pendiente.local*) continue ;;
+        esac
+        if printf '%s' "$ANADIDO" | grep -qF -- "$VALOR"; then
+            reportar "El valor de $CLAVE (de tu .env) aparece en los cambios." \
+                "Ese dato debe leerse del entorno, no escribirse en el codigo."
+        fi
+    done < "$RAIZ/.env"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Patrones que son secretos por su forma, venga de donde venga
+# ---------------------------------------------------------------------------
+if [ -n "$ANADIDO" ]; then
+    # Token de acceso de Meta
+    if printf '%s' "$ANADIDO" | grep -qE 'EAA[A-Za-z0-9]{40,}'; then
+        reportar "Parece un token de acceso de Meta (EAA...)."
+    fi
+    # Correo interno real de MERCAMIO
+    if printf '%s' "$ANADIDO" | grep -qE '[A-Za-z0-9._%+-]+@mercamio\.com'; then
+        reportar "Hay un correo @mercamio.com completo." \
+            "Los correos del area contable son datos personales." \
+            "Van en MERCAMIO_ROUTES_JSON dentro de .env, no en el repositorio."
+    fi
+    # Clave de cifrado de n8n con valor
+    if printf '%s' "$ANADIDO" | grep -qE 'N8N_ENCRYPTION_KEY[[:space:]]*[:=][[:space:]]*["'\'']?[0-9a-fA-F]{32,}'; then
+        reportar "N8N_ENCRYPTION_KEY con un valor real."
+    fi
+    # Token de tunel de Cloudflare
+    if printf '%s' "$ANADIDO" | grep -qE 'TUNNEL_TOKEN[[:space:]]*[:=][[:space:]]*["'\'']?eyJ[A-Za-z0-9_-]{20,}'; then
+        reportar "TUNNEL_TOKEN con un valor real."
+    fi
+    # Clave privada en formato PEM.
+    #
+    # Se exigen los guiones de la cabecera real y una clase de caracteres en
+    # lugar de .* a proposito: con 'BEGIN .*PRIVATE KEY' el hook se bloqueaba a
+    # si mismo, porque su propio codigo fuente contiene el patron. Un detector
+    # que no puede commitearse esta roto.
+    if printf '%s' "$ANADIDO" | grep -qE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----'; then
+        reportar "Una clave privada en formato PEM."
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+if [ "$FALLOS" -gt 0 ]; then
+    echo ""
+    gris "  Comprobacion completa antes de publicar: docs/07-privacidad-y-repo-publico.md"
+    gris "  Saltar (solo si estas seguro):  git commit --no-verify"
+    echo ""
+    exit 1
+fi
+
+exit 0

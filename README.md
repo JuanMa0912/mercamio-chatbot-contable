@@ -17,6 +17,9 @@ Lo mínimo para verlo funcionando. **No necesitas cuenta de Meta ni credenciales
 de Google** para este camino.
 
 ```powershell
+# 0. Activar el bloqueo de secretos (una sola vez tras clonar)
+git config core.hooksPath .githooks
+
 # 1. Configuración
 Copy-Item .env.example .env
 #    Edita .env: POSTGRES_PASSWORD y N8N_ENCRYPTION_KEY son obligatorios.
@@ -327,6 +330,28 @@ valores nuevos; `restart` **no** relee el archivo).
   lleva 5 correos de empleados, el ID de la hoja y 3 IDs de credenciales. En el
   repositorio va la versión sanitizada.
 - **`*credenciales*.json`, `n8n-credentials*.json`** — exportaciones con tokens en claro.
+
+### Bloqueo automático de secretos
+
+Hay un hook de `pre-commit` en [.githooks/](.githooks/) que **impide el commit**
+si detecta:
+
+- un archivo prohibido (`.env`, `.claude/`, el JSON original, claves)
+- **el valor literal de cualquier secreto de tu `.env`** — la comprobación más
+  fiable y sin falsos positivos: si está en tu `.env` y aparece en un commit,
+  es una fuga
+- un token de Meta (`EAA...`), un correo `@mercamio.com` completo, una
+  `N8N_ENCRYPTION_KEY` con valor, un `TUNNEL_TOKEN`, una clave privada
+
+Se activa una vez por clon:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+No sustituye a las comprobaciones de
+[docs/07](docs/07-privacidad-y-repo-publico.md): el hook mira lo que entra en
+cada commit, esas miran lo que ya está en el repositorio.
 
 Antes de hacer público el repositorio, lee
 [docs/07-privacidad-y-repo-publico.md](docs/07-privacidad-y-repo-publico.md).
