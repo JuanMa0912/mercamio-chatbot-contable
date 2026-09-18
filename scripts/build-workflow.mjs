@@ -22,6 +22,15 @@ const leer = (ruta) => readFileSync(join(RAIZ, ruta), 'utf8');
 
 const MOTOR = leer('src/nodes/01-motor-conversacional.js');
 const RECUPERAR = leer('src/nodes/02-recuperar-respuesta.js');
+const CHAT_HTML = leer('src/ui/chat.html');
+
+// El HTML se entrega como cadena literal en el nodo Respond to Webhook. n8n solo
+// evalua expresiones en campos que EMPIEZAN por '=', asi que un literal es
+// seguro. Aun asi se comprueba que no haya '{{' por si alguien cambia el modo
+// del campo mas adelante.
+if (CHAT_HTML.includes('{{')) {
+  throw new Error('src/ui/chat.html contiene "{{": n8n lo interpretaria como expresion.');
+}
 
 const NOMBRE_MOTOR = 'Motor conversacional - 9 rutas';
 
@@ -243,12 +252,55 @@ const workflowSimulador = {
       typeVersion: 1.1,
       position: [880, 0],
     },
+    // ── Chat web de pruebas ────────────────────────────────────────────────
+    // Par de nodos independiente del flujo del bot: sirve la interfaz HTML.
+    // Va dentro de este mismo workflow y no en un servidor aparte para que el
+    // chat quede en el MISMO ORIGEN que el webhook de mensajes: asi no hay
+    // peticiones cruzadas y no hace falta configurar CORS.
+    {
+      parameters: {
+        httpMethod: 'GET',
+        path: 'mercamio-chat',
+        responseMode: 'responseNode',
+        options: {},
+      },
+      id: 'a1000000-0000-4000-8000-000000000022',
+      name: 'Chat de pruebas (interfaz)',
+      type: 'n8n-nodes-base.webhook',
+      typeVersion: 2,
+      position: [-220, 320],
+      webhookId: 'mercamio-chat-v07',
+      notes: 'Abre http://localhost:5678/webhook/mercamio-chat en el navegador.',
+    },
+    {
+      parameters: {
+        respondWith: 'text',
+        responseBody: CHAT_HTML,
+        options: {
+          responseHeaders: {
+            entries: [
+              { name: 'Content-Type', value: 'text/html; charset=utf-8' },
+              // Sin esto el navegador cachea la interfaz y un cambio en
+              // src/ui/chat.html no se ve hasta forzar recarga.
+              { name: 'Cache-Control', value: 'no-store' },
+            ],
+          },
+        },
+      },
+      id: 'a1000000-0000-4000-8000-000000000023',
+      name: 'Entregar la interfaz',
+      type: 'n8n-nodes-base.respondToWebhook',
+      typeVersion: 1.1,
+      position: [0, 320],
+      notes: 'HTML generado desde src/ui/chat.html. No editar aqui.',
+    },
     nota('a1000000-0000-4000-8000-0000000000n3', [-260, -320], 700, 260, 5,
-      '## Simulador local - sin Meta y sin Google\n\nPrueba el motor de 9 rutas de punta a punta sin cuenta de WhatsApp ni credenciales de Google.\n\n```\npwsh scripts/simular-conversacion.ps1\n```\n\n**El workflow debe estar ACTIVO** y hay que usar la URL de produccion (`/webhook/...`), no la de prueba (`/webhook-test/...`): el static data solo persiste en ejecuciones de produccion. Sin eso el bot saluda en cada mensaje.\n\nEl nodo de Sheets viene deshabilitado; habilitalo cuando quieras probar el registro real.'),
+      '## Simulador local - sin Meta y sin Google\n\nPrueba el motor de 9 rutas de punta a punta sin cuenta de WhatsApp ni credenciales de Google.\n\n**Chat web (para que lo pruebe contabilidad):**\nhttp://localhost:5678/webhook/mercamio-chat\n\n**Por consola:**\n```\npowershell -File scripts/simular-conversacion.ps1\n```\n\n**El workflow debe estar ACTIVO** y hay que usar la URL de produccion (`/webhook/...`), no la de prueba (`/webhook-test/...`): el static data solo persiste en ejecuciones de produccion. Sin eso el bot saluda en cada mensaje.\n\nEl nodo de Sheets viene deshabilitado; habilitalo cuando quieras probar el registro real.'),
   ],
   pinData: {},
   connections: {
     'Webhook simulador': { main: [[{ node: NOMBRE_MOTOR, type: 'main', index: 0 }]] },
+    'Chat de pruebas (interfaz)': { main: [[{ node: 'Entregar la interfaz', type: 'main', index: 0 }]] },
     [NOMBRE_MOTOR]: { main: [[{ node: 'Tiene ticket?', type: 'main', index: 0 }]] },
     'Tiene ticket?': {
       main: [

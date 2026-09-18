@@ -31,6 +31,30 @@ Set-Location $raiz
 function Escribir-Paso { param([string]$Texto) Write-Host "==> $Texto" -ForegroundColor Cyan }
 function Escribir-Error2 { param([string]$Texto) Write-Host "ERROR: $Texto" -ForegroundColor Red }
 
+# Ejecuta un comando nativo descartando su salida y devuelve el codigo de salida.
+#
+# En Windows PowerShell 5.1, redirigir el stderr de un ejecutable nativo
+# (`docker ... *>$null` o `2>&1`) envuelve cada linea en un ErrorRecord de tipo
+# NativeCommandError y pone $? en $false, incluso cuando el comando devolvio 0.
+# Con $ErrorActionPreference = 'Stop' eso aborta el script. docker escribe su
+# progreso en stderr, asi que cualquier `docker compose` con redireccion falla.
+#
+# La solucion es NO redirigir el stderr: se baja la preferencia de error solo
+# durante la llamada y se consulta $LASTEXITCODE, que si es fiable.
+function Invocar-Nativo {
+    param([Parameter(Mandatory = $true)][scriptblock]$Comando)
+
+    $previo = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Comando | Out-Null
+        return $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previo
+    }
+}
+
 # --- 1. Pruebas del motor ----------------------------------------------------
 if (-not $SaltarPruebas) {
     Escribir-Paso 'Ejecutando pruebas del motor conversacional'
@@ -100,14 +124,23 @@ if ($salidaTexto -notmatch 'Successfully imported') {
 if ($activosAntes.Count -gt 0) {
     Escribir-Paso 'Reactivando los workflows que estaban activos'
     foreach ($id in $activosAntes) {
-        docker compose exec -T n8n n8n update:workflow --id=$id --active=true *>$null
-        Write-Host "    reactivado: $id"
+        $codigo = Invocar-Nativo { docker compose exec -T n8n n8n update:workflow --id=$id --active=true }
+        if ($codigo -ne 0) {
+            Escribir-Error2 "No se pudo reactivar $id (codigo $codigo). Activalo a mano en la interfaz."
+        }
+        else {
+            Write-Host "    reactivado: $id"
+        }
     }
     # El reinicio es obligatorio: la propia CLI avisa de que la activacion no
     # surte efecto mientras n8n esta corriendo, porque el proceso en marcha no
     # vuelve a registrar los webhooks por su cuenta.
     Escribir-Paso 'Reiniciando n8n para reregistrar los webhooks'
-    docker compose restart n8n *>$null
+    $codigoRestart = Invocar-Nativo { docker compose restart n8n }
+    if ($codigoRestart -ne 0) {
+        Escribir-Error2 "docker compose restart devolvio $codigoRestart. Revisa: docker compose logs n8n"
+        exit 1
+    }
 
     $listo = $false
     foreach ($intento in 1..40) {

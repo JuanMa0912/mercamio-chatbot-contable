@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MERCAMIO - Probar el ChatBOT contable</title>
+<!--
+  Interfaz de pruebas del chatbot contable.
+
+  La sirve n8n desde el propio workflow (webhook GET /mercamio-chat) y habla con
+  el webhook POST /mercamio-sim. Al estar en el mismo origen que n8n no hay
+  peticiones cruzadas, asi que no hace falta configurar CORS ni levantar un
+  servidor web aparte.
+
+  Codigo fuente: src/ui/chat.html  -> inyectado por scripts/build-workflow.mjs
+-->
+<style>
+  :root {
+    --fondo: #eae6df;
+    --panel: #ffffff;
+    --texto: #111b21;
+    --texto-suave: #667781;
+    --borde: #d9d4cd;
+    --burbuja-bot: #ffffff;
+    --burbuja-yo: #d9fdd3;
+    --acento: #128c7e;
+    --acento-oscuro: #075e54;
+    --error: #b3261e;
+    --aviso-fondo: #fff4e5;
+    --aviso-borde: #f0c26b;
+    --dbg-fondo: #f7f5f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-tema="claro"]) {
+      --fondo: #0b141a;
+      --panel: #111b21;
+      --texto: #e9edef;
+      --texto-suave: #8696a0;
+      --borde: #222d34;
+      --burbuja-bot: #202c33;
+      --burbuja-yo: #005c4b;
+      --acento: #00a884;
+      --acento-oscuro: #025c4c;
+      --error: #f2b8b5;
+      --aviso-fondo: #2b2316;
+      --aviso-borde: #6b5624;
+      --dbg-fondo: #0f181d;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--fondo);
+    color: var(--texto);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.45;
+    display: flex;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .app {
+    width: 100%;
+    max-width: 560px;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border-left: 1px solid var(--borde);
+    border-right: 1px solid var(--borde);
+  }
+
+  /* ---------------------------------------------------------- cabecera */
+  header {
+    background: var(--acento-oscuro);
+    color: #fff;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 0 0 auto;
+  }
+  .avatar {
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    background: var(--acento);
+    display: grid; place-items: center;
+    font-weight: 700; font-size: 14px;
+    flex: 0 0 auto;
+  }
+  .ident { flex: 1 1 auto; min-width: 0; }
+  .ident b { display: block; font-size: 15px; }
+  .ident span {
+    display: block;
+    font-size: 12px;
+    opacity: .8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  header button {
+    background: rgba(255,255,255,.14);
+    color: #fff;
+    border: 0;
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  header button:hover { background: rgba(255,255,255,.26); }
+
+  /* ------------------------------------------------------------ aviso */
+  .aviso {
+    background: var(--aviso-fondo);
+    border-bottom: 1px solid var(--aviso-borde);
+    color: var(--texto);
+    padding: 10px 16px;
+    font-size: 13px;
+    flex: 0 0 auto;
+  }
+  .aviso code {
+    background: rgba(0,0,0,.08);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .aviso.oculto { display: none; }
+
+  /* --------------------------------------------------------- mensajes */
+  .mensajes {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 16px 14px 8px;
+    background: var(--fondo);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .burbuja {
+    max-width: 84%;
+    padding: 8px 11px 6px;
+    border-radius: 8px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    box-shadow: 0 1px 1px rgba(0,0,0,.12);
+    position: relative;
+  }
+  .burbuja.bot { background: var(--burbuja-bot); align-self: flex-start; border-top-left-radius: 2px; }
+  .burbuja.yo  { background: var(--burbuja-yo);  align-self: flex-end;   border-top-right-radius: 2px; }
+  .burbuja .hora {
+    display: block;
+    text-align: right;
+    font-size: 11px;
+    color: var(--texto-suave);
+    margin-top: 2px;
+  }
+  .burbuja.sistema {
+    align-self: center;
+    background: transparent;
+    box-shadow: none;
+    color: var(--texto-suave);
+    font-size: 12.5px;
+    text-align: center;
+    max-width: 95%;
+  }
+  .burbuja.fallo {
+    align-self: center;
+    background: var(--burbuja-bot);
+    border: 1px solid var(--error);
+    color: var(--texto);
+    font-size: 13px;
+    max-width: 95%;
+  }
+  .burbuja.fallo b { color: var(--error); }
+
+  .escribiendo { align-self: flex-start; display: flex; gap: 4px; padding: 12px 14px;
+    background: var(--burbuja-bot); border-radius: 8px; box-shadow: 0 1px 1px rgba(0,0,0,.12); }
+  .escribiendo i {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--texto-suave);
+    animation: pulso 1.2s infinite ease-in-out;
+  }
+  .escribiendo i:nth-child(2) { animation-delay: .18s; }
+  .escribiendo i:nth-child(3) { animation-delay: .36s; }
+  @keyframes pulso {
+    0%, 60%, 100% { opacity: .3; transform: translateY(0); }
+    30%           { opacity: 1;  transform: translateY(-3px); }
+  }
+
+  /* ----------------------------------------------------- respuestas rapidas */
+  .rapidas {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 6px;
+    padding: 8px 12px 0;
+    background: var(--fondo);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .rapidas::-webkit-scrollbar { display: none; }
+  .rapidas button {
+    background: var(--panel);
+    color: var(--acento);
+    border: 1px solid var(--acento);
+    border-radius: 999px;
+    padding: 5px 13px;
+    font-size: 13px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .rapidas button:hover { background: var(--acento); color: #fff; }
+
+  /* -------------------------------------------------------- formulario */
+  form {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    background: var(--fondo);
+    align-items: flex-end;
+  }
+  textarea {
+    flex: 1 1 auto;
+    resize: none;
+    border: 1px solid var(--borde);
+    border-radius: 20px;
+    padding: 10px 14px;
+    font: inherit;
+    background: var(--panel);
+    color: var(--texto);
+    max-height: 120px;
+  }
+  textarea:focus { outline: 2px solid var(--acento); outline-offset: -1px; }
+  form button {
+    width: 42px; height: 42px;
+    border: 0; border-radius: 50%;
+    background: var(--acento);
+    color: #fff;
+    font-size: 18px;
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  form button:disabled { opacity: .45; cursor: default; }
+
+  /* ---------------------------------------------------------- depuracion */
+  .dbg {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--borde);
+    background: var(--dbg-fondo);
+    font-size: 12px;
+  }
+  .dbg summary {
+    padding: 8px 14px;
+    cursor: pointer;
+    color: var(--texto-suave);
+    user-select: none;
+  }
+  .dbg .cuerpo { padding: 0 14px 12px; }
+  .dbg dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 10px;
+    margin: 0 0 8px;
+  }
+  .dbg dt { color: var(--texto-suave); }
+  .dbg dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .dbg pre {
+    margin: 0;
+    padding: 8px 10px;
+    background: var(--panel);
+    border: 1px solid var(--borde);
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 11.5px;
+    line-height: 1.5;
+    max-height: 200px;
+  }
+  .etiqueta {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 4px;
+    background: var(--acento);
+    color: #fff;
+    font-size: 11px;
+    font-family: inherit;
+  }
+  .etiqueta.escalar { background: #c77700; }
+  .etiqueta.cierre  { background: var(--texto-suave); }
+  .etiqueta.fallo   { background: var(--error); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="avatar">MC</div>
+    <div class="ident">
+      <b>Asistente contable MERCAMIO</b>
+      <span id="ident-sub">simulador local</span>
+    </div>
+    <button id="btn-nuevo" title="Empezar una conversacion nueva con otro numero">Nueva</button>
+  </header>
+
+  <div class="aviso" id="aviso">
+    Entorno de <b>pruebas</b>. No pasa por WhatsApp y no se envia nada a ningun
+    proveedor. El registro en Google Sheets esta desactivado salvo que se
+    habilite el nodo <code>Registrar solicitud en Sheets</code>.
+  </div>
+
+  <div class="mensajes" id="mensajes" aria-live="polite"></div>
+
+  <div class="rapidas" id="rapidas"></div>
+
+  <form id="formulario">
+    <textarea id="entrada" rows="1" placeholder="Escribe un mensaje" autocomplete="off"></textarea>
+    <button type="submit" id="btn-enviar" title="Enviar">&#10148;</button>
+  </form>
+
+  <details class="dbg" id="dbg">
+    <summary>Detalle tecnico de la ultima respuesta</summary>
+    <div class="cuerpo">
+      <dl>
+        <dt>accion</dt>      <dd id="d-accion">-</dd>
+        <dt>paso</dt>        <dd id="d-estado">-</dd>
+        <dt>ruta</dt>        <dd id="d-ruta">-</dd>
+        <dt>conversacion</dt><dd id="d-sesion">-</dd>
+      </dl>
+      <pre id="d-ticket">Sin ticket todavia.</pre>
+    </div>
+  </details>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // El chat se sirve desde el mismo n8n, asi que la ruta del webhook es
+  // relativa: funciona igual en localhost, por IP de la red local o detras del
+  // tunel, sin reconfigurar nada.
+  var URL_WEBHOOK = new URL('mercamio-sim', window.location.href).href;
+  var CLAVE_TELEFONO = 'mercamio.chat.telefono';
+
+  var elMensajes = document.getElementById('mensajes');
+  var elFormulario = document.getElementById('formulario');
+  var elEntrada = document.getElementById('entrada');
+  var elEnviar = document.getElementById('btn-enviar');
+  var elNuevo = document.getElementById('btn-nuevo');
+  var elRapidas = document.getElementById('rapidas');
+  var elSub = document.getElementById('ident-sub');
+  var elAviso = document.getElementById('aviso');
+
+  var enVuelo = false;
+
+  // ------------------------------------------------------- identidad local
+  function telefonoNuevo() {
+    var n = '';
+    for (var i = 0; i < 8; i += 1) { n += Math.floor(Math.random() * 10); }
+    return '5730' + n;
+  }
+
+  function leerTelefono() {
+    var guardado = null;
+    try { guardado = window.localStorage.getItem(CLAVE_TELEFONO); } catch (e) { guardado = null; }
+    if (guardado && /^\d{8,15}$/.test(guardado)) { return guardado; }
+    var nuevo = telefonoNuevo();
+    try { window.localStorage.setItem(CLAVE_TELEFONO, nuevo); } catch (e) { /* modo privado */ }
+    return nuevo;
+  }
+
+  var telefono = leerTelefono();
+  elSub.textContent = 'simulando el numero ' + telefono;
+
+  // --------------------------------------------------------------- pintado
+  function hora() {
+    var d = new Date();
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  function abajo() { elMensajes.scrollTop = elMensajes.scrollHeight; }
+
+  function burbuja(texto, clase, conHora) {
+    var div = document.createElement('div');
+    div.className = 'burbuja ' + clase;
+    var cuerpo = document.createElement('span');
+    cuerpo.textContent = texto;
+    div.appendChild(cuerpo);
+    if (conHora) {
+      var h = document.createElement('span');
+      h.className = 'hora';
+      h.textContent = hora();
+      div.appendChild(h);
+    }
+    elMensajes.appendChild(div);
+    abajo();
+    return div;
+  }
+
+  function sistema(texto) { burbuja(texto, 'sistema', false); }
+
+  function fallo(titulo, detalle, pistas) {
+    var div = document.createElement('div');
+    div.className = 'burbuja fallo';
+    var b = document.createElement('b');
+    b.textContent = titulo;
+    div.appendChild(b);
+    div.appendChild(document.createTextNode('\n' + detalle));
+    if (pistas && pistas.length) {
+      var ul = document.createElement('ul');
+      ul.style.margin = '8px 0 0';
+      ul.style.paddingLeft = '20px';
+      pistas.forEach(function (p) {
+        var li = document.createElement('li');
+        li.textContent = p;
+        ul.appendChild(li);
+      });
+      div.appendChild(ul);
+    }
+    elMensajes.appendChild(div);
+    abajo();
+  }
+
+  function escribiendo(mostrar) {
+    var previo = document.getElementById('escribiendo');
+    if (previo) { previo.remove(); }
+    if (!mostrar) { return; }
+    var div = document.createElement('div');
+    div.className = 'escribiendo';
+    div.id = 'escribiendo';
+    for (var i = 0; i < 3; i += 1) { div.appendChild(document.createElement('i')); }
+    elMensajes.appendChild(div);
+    abajo();
+  }
+
+  // ------------------------------------------------------------ depuracion
+  var CLASE_ACCION = {
+    TICKET: '',
+    ESCALAR: 'escalar',
+    CIERRE: 'cierre',
+    RESPUESTA: '',
+    FALLBACK: 'fallo',
+    NO_SOPORTADO: 'fallo'
+  };
+
+  function pintarDetalle(r) {
+    var elAccion = document.getElementById('d-accion');
+    elAccion.textContent = '';
+    var tag = document.createElement('span');
+    tag.className = 'etiqueta ' + (CLASE_ACCION[r.accion] || '');
+    tag.textContent = r.accion || '-';
+    elAccion.appendChild(tag);
+
+    document.getElementById('d-estado').textContent = r.estado || '-';
+    document.getElementById('d-ruta').textContent = r.ruta || '-';
+    document.getElementById('d-sesion').textContent = telefono;
+
+    var pre = document.getElementById('d-ticket');
+    if (r.ticket && r.ticket.ticket_id) {
+      pre.textContent = JSON.stringify(r.ticket, null, 2);
+      document.getElementById('dbg').open = true;
+    } else {
+      pre.textContent = 'Sin ticket todavia.';
+    }
+  }
+
+  // -------------------------------------------------- respuestas rapidas
+  // Las opciones que el bot acaba de ofrecer, extraidas de su propio texto:
+  // evita que quien prueba tenga que teclear "1" cuarenta veces.
+  function pintarRapidas(textoBot) {
+    elRapidas.textContent = '';
+    var opciones = [];
+    if (textoBot) {
+      var lineas = textoBot.split('\n');
+      for (var i = 0; i < lineas.length; i += 1) {
+        var m = lineas[i].match(/^\s*([1-9])\.\s*(.+?)\s*$/);
+        if (m) {
+          var etiqueta = m[2];
+          if (etiqueta.length > 26) { etiqueta = etiqueta.slice(0, 25) + '…'; }
+          opciones.push({ valor: m[1], texto: m[1] + '. ' + etiqueta });
+        }
+      }
+    }
+    opciones.push({ valor: 'REINICIAR', texto: 'REINICIAR' });
+
+    opciones.forEach(function (o) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = o.texto;
+      b.addEventListener('click', function () { enviar(o.valor); });
+      elRapidas.appendChild(b);
+    });
+  }
+
+  // ------------------------------------------------------------ transporte
+  function enviar(texto) {
+    var limpio = String(texto == null ? '' : texto).trim();
+    if (!limpio || enVuelo) { return; }
+
+    enVuelo = true;
+    elEnviar.disabled = true;
+    burbuja(limpio, 'yo', true);
+    elEntrada.value = '';
+    elEntrada.style.height = 'auto';
+    escribiendo(true);
+
+    var controlador = new AbortController();
+    var reloj = window.setTimeout(function () { controlador.abort(); }, 30000);
+
+    window.fetch(URL_WEBHOOK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: telefono, text: limpio }),
+      signal: controlador.signal
+    }).then(function (resp) {
+      if (resp.status === 404) {
+        var e404 = new Error('404');
+        e404.codigo = 404;
+        throw e404;
+      }
+      if (!resp.ok) {
+        var eHttp = new Error('HTTP ' + resp.status);
+        eHttp.codigo = resp.status;
+        throw eHttp;
+      }
+      return resp.text();
+    }).then(function (crudo) {
+      escribiendo(false);
+
+      // Cuerpo vacio: el motor descarto el evento a proposito (webhook
+      // repetido, acuse de estado). Es comportamiento correcto, no un fallo.
+      if (!crudo || !crudo.trim()) {
+        sistema('El motor descarto este evento (mensaje repetido). No hay respuesta, y es lo esperado.');
+        return;
+      }
+
+      var r;
+      try { r = JSON.parse(crudo); }
+      catch (e) {
+        fallo('Respuesta ilegible', 'n8n devolvio algo que no es JSON:\n' + crudo.slice(0, 300), null);
+        return;
+      }
+
+      if (!r.respuesta) {
+        fallo('Respuesta sin texto',
+          'El flujo respondio pero sin el campo "respuesta". Revisa el nodo "Responder al simulador".',
+          ['Detalle: ' + JSON.stringify(r).slice(0, 200)]);
+        return;
+      }
+
+      burbuja(r.respuesta, 'bot', true);
+      pintarDetalle(r);
+      pintarRapidas(r.respuesta);
+    }).catch(function (err) {
+      escribiendo(false);
+      if (err.name === 'AbortError') {
+        fallo('Sin respuesta en 30 segundos',
+          'n8n no contesto a tiempo.',
+          ['Mira los logs: docker compose logs -f n8n']);
+      } else if (err.codigo === 404) {
+        fallo('El webhook no existe (404)',
+          'Casi siempre significa que el workflow del simulador esta INACTIVO.',
+          [
+            'Abre n8n y activa "V07 (Simulador local)" con el interruptor.',
+            'Si acabas de importar: la importacion desactiva los workflows.',
+            'Por CLI: docker compose exec n8n n8n update:workflow --id=mercamioSim00001 --active=true  y luego  docker compose restart n8n'
+          ]);
+      } else {
+        fallo('No se pudo contactar con n8n', String(err.message || err),
+          ['Comprueba que el contenedor esta arriba: docker compose ps']);
+      }
+    }).then(function () {
+      window.clearTimeout(reloj);
+      enVuelo = false;
+      elEnviar.disabled = false;
+      elEntrada.focus();
+    });
+  }
+
+  // ---------------------------------------------------------------- eventos
+  elFormulario.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    enviar(elEntrada.value);
+  });
+
+  elEntrada.addEventListener('keydown', function (ev) {
+    // Enter envia; Shift+Enter hace salto de linea.
+    if (ev.key === 'Enter' && !ev.shiftKey) {
+      ev.preventDefault();
+      enviar(elEntrada.value);
+    }
+  });
+
+  elEntrada.addEventListener('input', function () {
+    elEntrada.style.height = 'auto';
+    elEntrada.style.height = Math.min(elEntrada.scrollHeight, 120) + 'px';
+  });
+
+  elNuevo.addEventListener('click', function () {
+    telefono = telefonoNuevo();
+    try { window.localStorage.setItem(CLAVE_TELEFONO, telefono); } catch (e) { /* modo privado */ }
+    elSub.textContent = 'simulando el numero ' + telefono;
+    elMensajes.textContent = '';
+    document.getElementById('d-ticket').textContent = 'Sin ticket todavia.';
+    sistema('Conversacion nueva con el numero ' + telefono + '. Escribe "hola" para empezar.');
+    pintarRapidas('');
+  });
+
+  elAviso.addEventListener('click', function () { elAviso.classList.add('oculto'); });
+
+  // ----------------------------------------------------------------- inicio
+  sistema('Conversacion de prueba con el numero ' + telefono
+    + '. Escribe "hola" para empezar. El boton "Nueva" arranca de cero con otro numero.');
+  pintarRapidas('');
+  elEntrada.focus();
+}());
+</script>
+</body>
+</html>
