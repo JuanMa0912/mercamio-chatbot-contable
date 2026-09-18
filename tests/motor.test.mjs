@@ -10,7 +10,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { nuevaConversacion, PRELUDIO } from './harness.mjs';
+import { nuevaConversacion, PRELUDIO, describirFallo, describirEnvioCorrecto } from './harness.mjs';
 
 // Columnas que Google Sheets espera recibir SIEMPRE, sin importar la ruta.
 const COLUMNAS_SHEET = [
@@ -301,5 +301,120 @@ describe('entrada del simulador local', () => {
     });
     assert.equal(items.length, 1);
     assert.equal(items[0].json.businessPhoneNumberId, '999');
+  });
+});
+
+describe('registro de fallos de entrega', () => {
+  // Columnas que espera la pestana "Fallos" de la hoja.
+  const COLUMNAS_FALLO = [
+    'fecha', 'session_id', 'telefono', 'nodo', 'error', 'ticket_id', 'mensaje_no_entregado',
+  ];
+
+  const motorDeEjemplo = {
+    session_id: '573001112233',
+    waTo: '573001112233',
+    output: 'Solicitud registrada con el ticket MCM-12345678.',
+    ticket: { ticket_id: 'MCM-12345678' },
+  };
+
+  test('la fila lleva todas las columnas de la pestana Fallos', () => {
+    const fila = describirFallo({ error: { message: 'roto' }, motor: motorDeEjemplo });
+    for (const c of COLUMNAS_FALLO) {
+      assert.ok(c in fila, `falta la columna ${c}`);
+    }
+  });
+
+  test('conserva el mensaje que no se pudo entregar, para reenviarlo a mano', () => {
+    const fila = describirFallo({ error: { message: 'roto' }, motor: motorDeEjemplo });
+    assert.equal(fila.mensaje_no_entregado, motorDeEjemplo.output);
+    assert.equal(fila.ticket_id, 'MCM-12345678');
+    assert.equal(fila.telefono, '573001112233');
+  });
+
+  test('saca el codigo y el mensaje del error anidado de Meta', () => {
+    const fila = describirFallo({
+      error: { cause: { error: { code: 131030, message: 'Recipient phone number not in allowed list' } } },
+      motor: motorDeEjemplo,
+    });
+    assert.match(fila.error, /131030/);
+    assert.match(fila.error, /not in allowed list/);
+  });
+
+  test('un error plano tambien se describe', () => {
+    const fila = describirFallo({ error: { message: 'connect ETIMEDOUT' }, motor: motorDeEjemplo });
+    assert.equal(fila.error, 'connect ETIMEDOUT');
+  });
+
+  // Regresion con el fallo real de produccion. n8n pone en `message` un texto
+  // generico y el motivo de Meta en `description`. La primera version leia
+  // `message` primero y todas las filas decian "Bad request", que no permite
+  // hacer nada. Lo accionable tiene que ir delante.
+  test('el motivo de Meta manda sobre el mensaje generico de n8n', () => {
+    const fila = describirFallo({
+      error: {
+        message: 'Bad request - please check your parameters',
+        description: 'Recipient phone number not in allowed list',
+        name: 'NodeApiError',
+      },
+      motor: motorDeEjemplo,
+    });
+    assert.ok(fila.error.startsWith('Recipient phone number not in allowed list'));
+    assert.match(fila.error, /Bad request/);
+  });
+
+  test('no duplica el texto cuando generico y especifico coinciden', () => {
+    const fila = describirFallo({ error: { message: 'igual', description: 'igual' }, motor: motorDeEjemplo });
+    assert.equal(fila.error, 'igual');
+  });
+
+  // Aunque el error venga vacio, la celda tiene que decir algo que permita
+  // reconocer la forma del item y ampliar la extraccion. Una celda vacia
+  // obliga a reproducir el fallo para poder diagnosticarlo.
+  test('un error sin mensaje vuelca el item para no perder la pista', () => {
+    const fila = describirFallo({ error: {}, motor: motorDeEjemplo });
+    assert.notEqual(fila.error, "");
+    assert.match(fila.error, /crudo/);
+  });
+
+  // Meta y n8n cambian la forma del error entre versiones. Antes que perder el
+  // diagnostico, se vuelca el objeto crudo en la celda.
+  test('un error con forma desconocida se vuelca crudo en vez de perderse', () => {
+    const fila = describirFallo({ error: { algoRaro: 'detalle util', codigoX: 77 }, motor: motorDeEjemplo });
+    assert.match(fila.error, /crudo:/);
+    assert.match(fila.error, /detalle util/);
+  });
+
+  // Si el nodo del motor no se puede releer, registrar una fila incompleta
+  // sigue siendo mejor que tumbar la ejecucion y perder el fallo entero.
+  test('si no se puede releer el motor, registra igual lo que sabe', () => {
+    const fila = describirFallo({ error: { message: 'roto' }, motor: null });
+    assert.equal(fila.error, 'roto');
+    assert.equal(fila.mensaje_no_entregado, '');
+    assert.equal(fila.nodo, 'Responder por WhatsApp Business');
+  });
+
+  // Regresion: la primera version leia $input.first().json.error y n8n cuelga
+  // el error del ITEM. Todas las filas salian con "Error sin mensaje".
+  test('lee el error colgado del item, que es donde lo pone n8n', () => {
+    const fila = describirFallo({ error: { message: 'colgado del item' }, motor: motorDeEjemplo, donde: 'item' });
+    assert.equal(fila.error, 'colgado del item');
+  });
+
+  test('tambien lo lee si viene dentro de json', () => {
+    const fila = describirFallo({ error: { message: 'dentro de json' }, motor: motorDeEjemplo, donde: 'json' });
+    assert.equal(fila.error, 'dentro de json');
+  });
+
+  // El nodo cuelga de la salida NORMAL del envio, asi que por el pasan tambien
+  // los mensajes entregados. Si no los descartara, cada respuesta correcta
+  // dejaria una fila en la pestana de fallos y la hoja seria inservible.
+  test('un envio correcto no deja ninguna fila', () => {
+    assert.equal(describirEnvioCorrecto(), null);
+  });
+
+  test('la fecha es ISO, que es como se ordena bien en la hoja', () => {
+    const fila = describirFallo({ error: { message: 'x' }, motor: motorDeEjemplo });
+    assert.ok(!Number.isNaN(Date.parse(fila.fecha)));
+    assert.match(fila.fecha, /^\d{4}-\d{2}-\d{2}T/);
   });
 });

@@ -22,6 +22,7 @@ const leer = (ruta) => readFileSync(join(RAIZ, ruta), 'utf8');
 
 const MOTOR = leer('src/nodes/01-motor-conversacional.js');
 const RECUPERAR = leer('src/nodes/02-recuperar-respuesta.js');
+const DESCRIBIR_FALLO = leer('src/nodes/03-describir-fallo.js');
 const CHAT_HTML = leer('src/ui/chat.html');
 
 // El HTML se entrega como cadena literal en el nodo Respond to Webhook. n8n solo
@@ -204,6 +205,61 @@ const nodoRecuperar = (pos) => ({
   notes: 'Codigo generado desde src/nodes/02-recuperar-respuesta.js.',
 });
 
+const COLUMNAS_FALLO = [
+  'fecha', 'session_id', 'telefono', 'nodo', 'error', 'ticket_id', 'mensaje_no_entregado',
+];
+
+const nodoDescribirFallo = (pos) => ({
+  parameters: { jsCode: DESCRIBIR_FALLO },
+  id: 'a1000000-0000-4000-8000-000000000005',
+  name: 'Describir el fallo',
+  type: 'n8n-nodes-base.code',
+  typeVersion: 2,
+  position: pos,
+  notes: 'Codigo generado desde src/nodes/03-describir-fallo.js. Recibe la salida de ERROR del envio.',
+});
+
+// Segundo nodo de Sheets, a la pestana "Fallos". Deliberadamente NO comparte
+// codigo con el de solicitudes: son dos tablas con columnas distintas y unirlas
+// obligaria a parametrizarlo todo para ahorrar unas lineas.
+const nodoRegistrarFallo = (pos) => ({
+  parameters: {
+    authentication: 'serviceAccount',
+    operation: 'append',
+    documentId: { __rl: true, value: '={{ $env.MERCAMIO_SHEET_ID }}', mode: 'id' },
+    sheetName: { __rl: true, value: 'Fallos', mode: 'name' },
+    columns: {
+      mappingMode: 'defineBelow',
+      value: Object.fromEntries(COLUMNAS_FALLO.map((c) => [c, '={{ $json.' + c + ' }}'])),
+      matchingColumns: [],
+      schema: COLUMNAS_FALLO.map((id) => ({
+        id,
+        displayName: id,
+        required: false,
+        defaultMatch: false,
+        display: true,
+        type: 'string',
+        canBeUsedToMatch: true,
+      })),
+      attemptToConvertTypes: false,
+      convertFieldsToString: true,
+    },
+    options: {},
+  },
+  id: 'a1000000-0000-4000-8000-000000000006',
+  name: 'Registrar fallo en Sheets',
+  type: 'n8n-nodes-base.googleSheets',
+  typeVersion: 4.7,
+  position: pos,
+  credentials: { googleApi: CRED_SHEETS },
+  // Si tambien falla el registro del fallo no queda nada que hacer desde aqui:
+  // se deja morir la ejecucion en rojo, que es el ultimo rastro disponible.
+  retryOnFail: true,
+  maxTries: 3,
+  waitBetweenTries: 2000,
+  notes: 'Pestana "Fallos" de la misma hoja. Guarda el mensaje que no se pudo entregar para poder reenviarlo a mano.',
+});
+
 const nota = (id, pos, ancho, alto, color, contenido) => ({
   parameters: { content: contenido, height: alto, width: ancho, color },
   id,
@@ -263,8 +319,27 @@ const workflowWhatsapp = {
       typeVersion: 1.1,
       position: [880, 0],
       credentials: { whatsAppApi: CRED_WA_ENVIAR },
+      // Si el envio falla, el proveedor se queda esperando y la ejecucion
+      // muere en rojo sin que nadie se entere. El fallo se desvia a la pestana
+      // "Fallos" de la hoja, que es el unico sitio que contabilidad abre.
+      //
+      // Se usa 'continueRegularOutput' y NO 'continueErrorOutput' aunque la
+      // salida de error pareceria lo natural. Con la salida de error, n8n NO
+      // expone el error al sandbox del nodo Code: el item llega como
+      // {"json":{},"pairedItem":{"item":0}} y la causa se pierde entera. Con
+      // la salida normal, el error viaja dentro de json y se puede registrar.
+      // Comprobado inyectando un #131030 real y leyendo la fila resultante.
+      onError: 'continueRegularOutput',
+      // SIN reintentos, a proposito. El fallo mas frecuente (#131030,
+      // destinatario fuera de la lista blanca) no mejora reintentando. Y en
+      // los que si serian transitorios el reintento es peligroso: si el
+      // primer envio SI llego y solo se perdio la respuesta de Meta, el
+      // proveedor recibe el mensaje dos veces. Un fallo registrado es mejor
+      // que un duplicado silencioso.
       notes: 'La credencial lleva el access token permanente del Usuario del sistema y el Business Account ID.',
     },
+    nodoDescribirFallo([1100, 180]),
+    nodoRegistrarFallo([1320, 180]),
     nota('a1000000-0000-4000-8000-0000000000n1', [-260, -320], 460, 260, 4,
       '## Flujo corregido (V07)\n\n1. El trigger entrega el evento crudo de Meta.\n2. El **motor** descarta callbacks de estado y webhooks repetidos, y decide la respuesta.\n3. El **If** usa la bandera booleana `has_ticket` (antes evaluaba `ticket` como objeto y rompia con `null`).\n4. Solo la rama TRUE escribe en Sheets. Antes estaba invertida.\n5. Una sola ruta llega al envio: antes el mensaje salia duplicado.'),
     nota('a1000000-0000-4000-8000-0000000000n2', [240, -320], 420, 260, 3,
@@ -282,6 +357,13 @@ const workflowWhatsapp = {
     },
     'Registrar solicitud en Sheets': { main: [[{ node: 'Recuperar respuesta tras registro', type: 'main', index: 0 }]] },
     'Recuperar respuesta tras registro': { main: [[{ node: 'Responder por WhatsApp Business', type: 'main', index: 0 }]] },
+    // Una sola salida: pasan tanto los envios correctos como los fallidos.
+    // "Describir el fallo" descarta los correctos y solo deja fila cuando hay
+    // error, asi que no hay ramas que mantener sincronizadas.
+    'Responder por WhatsApp Business': {
+      main: [[{ node: 'Describir el fallo', type: 'main', index: 0 }]],
+    },
+    'Describir el fallo': { main: [[{ node: 'Registrar fallo en Sheets', type: 'main', index: 0 }]] },
   },
   active: false,
   settings: { executionOrder: 'v1', saveExecutionProgress: true, saveDataErrorExecution: 'all', saveDataSuccessExecution: 'all' },

@@ -148,7 +148,7 @@ powershell -File scripts/importar-workflows.ps1
 
 El script hace tres cosas en orden:
 
-1. Ejecuta las 33 pruebas del motor. **Si fallan, no importa nada.**
+1. Ejecuta las 46 pruebas del motor. **Si fallan, no importa nada.**
 2. Regenera `workflows/*.json` desde `src/nodes/*.js`.
 3. Los importa con `n8n import:workflow`.
 

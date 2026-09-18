@@ -306,7 +306,7 @@
     },
     {
       "parameters": {
-        "jsCode": "/**\n * MERCAMIO - Recuperar respuesta tras registrar el ticket\n * -------------------------------------------------------\n * Cuerpo del nodo Code \"Recuperar respuesta tras registro\".\n *\n * Por que existe: el nodo de Google Sheets devuelve como salida la FILA que\n * acaba de escribir, no el item que recibio. Si se conecta Sheets directo al\n * envio de WhatsApp, el nodo de envio recibe { ticket_id, nombre, ... } y no\n * encuentra ni `output` ni `waTo`, y falla.\n *\n * Este nodo vuelve a leer el item original del motor conversacional.\n */\nreturn [{ json: $('Motor conversacional - 9 rutas').first().json }];\n"
+        "jsCode": "/**\n * MERCAMIO - Recuperar respuesta tras registrar el ticket\n * -------------------------------------------------------\n * Cuerpo del nodo Code \"Recuperar respuesta tras registro\".\n *\n * Por que existe: el nodo de Google Sheets devuelve como salida la FILA que\n * acaba de escribir, no el item que recibio. Si se conecta Sheets directo al\n * envio de WhatsApp, el nodo de envio recibe { ticket_id, nombre, ... } y no\n * encuentra ni `output` ni `waTo`, y falla.\n *\n * Este nodo vuelve a leer el item original del motor conversacional.\n */\n\n// El nodo de Sheets lleva onError 'continueRegularOutput' a proposito: si la\n// escritura falla, el usuario DEBE recibir igual su numero de ticket. El efecto\n// secundario es que el fallo se traga sin dejar rastro, y la ejecucion aparece\n// como exitosa: el proveedor se va con un ticket que no existe en ninguna hoja.\n//\n// No se puede registrar ese fallo en la propia hoja —es justo la que acaba de\n// fallar—, asi que al menos se deja en el log de la ejecucion y en la salida\n// del contenedor (docker compose logs n8n), que es donde se mira cuando alguien\n// reclama por un ticket que nadie encuentra.\nconst entrada = $input.first();\nif (entrada && entrada.json && entrada.json.error) {\n  const e = entrada.json.error;\n  const motivo = e.message || (e.error && e.error.message) || JSON.stringify(e);\n  console.error('FALLO AL REGISTRAR EN SHEETS. El usuario recibira su ticket pero NO quedo en la hoja:', motivo);\n}\n\nreturn [{ json: $('Motor conversacional - 9 rutas').first().json }];\n"
       },
       "id": "a1000000-0000-4000-8000-000000000004",
       "name": "Recuperar respuesta tras registro",
@@ -340,7 +340,137 @@
           "name": "MERCAMIO WhatsApp - enviar"
         }
       },
+      "onError": "continueRegularOutput",
       "notes": "La credencial lleva el access token permanente del Usuario del sistema y el Business Account ID."
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * MERCAMIO - Describir un fallo de entrega\n * -----------------------------------------\n * Cuerpo del nodo Code \"Describir el fallo\".\n *\n * Por que existe: cuando el envio por WhatsApp falla, el proveedor que escribio\n * recibe silencio. No hay aviso, no hay correo, y el unico rastro queda en una\n * lista de ejecuciones de n8n que nadie mira. Con el numero de prueba el caso\n * mas comun es \"Recipient phone number not in allowed list\"; en produccion\n * seran cuota, red o un token revocado.\n *\n * Este nodo arma una fila para la pestana \"Fallos\" de la misma hoja donde ya\n * caen las solicitudes, que es el unico sitio que contabilidad abre de verdad.\n *\n * Lo mas valioso de la fila es `mensaje_no_entregado`: permite reenviarlo a\n * mano, que es lo unico que se puede hacer cuando alguien ya escribio y se\n * quedo esperando.\n */\n\n// -------------------------------------------------- de donde sale el error\n//\n// Esto costo tres intentos, asi que queda escrito.\n//\n// El nodo cuelga de la salida NORMAL del envio, no de la de error. Con\n// onError 'continueErrorOutput' n8n NO expone el error al sandbox del nodo\n// Code: el item llega como {\"json\":{},\"pairedItem\":{\"item\":0}} y la causa se\n// pierde entera.\n//\n// Con 'continueRegularOutput' el item llega asi:\n//\n//   {\n//     \"json\":  { \"error\": \"Bad request - please check your parameters\" },\n//     \"error\": { \"message\": \"Bad request - please check your parameters\",\n//                \"description\": \"Recipient phone number not in allowed list\",\n//                \"name\": \"NodeApiError\", \"context\": {} },\n//     \"pairedItem\": { \"item\": 0 }\n//   }\n//\n// O sea: dentro de `json` solo hay una CADENA generica, y el objeto con el\n// motivo real de Meta cuelga del ITEM. Hay que mirar el item PRIMERO; al reves,\n// todas las filas salen diciendo \"Bad request\" y no sirven para nada.\n//\n// Como por esta salida pasan tambien los envios correctos, hay que descartarlos.\nconst entrada = $input.first() || {};\nconst fallo = entrada.error || (entrada.json && entrada.json.error) || null;\n\nif (!fallo) {\n  // Envio correcto: devolver [] corta la rama sin escribir nada en la hoja.\n  return [];\n}\n\nlet original = {};\ntry {\n  original = $('Motor conversacional - 9 rutas').first().json || {};\n}\ncatch (e) {\n  // Si no se puede releer el motor, se registra igual con lo que haya: una\n  // fila incompleta sirve mas que ninguna fila.\n  original = {};\n}\n\n// `message` es el texto generico de n8n y `description` el motivo real de Meta.\n// Se conservan los dos, con el especifico delante: el generico indica el tipo\n// de fallo HTTP y ayuda cuando no hay descripcion.\nconst especifico =\n  fallo.description ||\n  (fallo.cause && fallo.cause.error && fallo.cause.error.message) ||\n  (fallo.cause && fallo.cause.message) ||\n  (fallo.error && fallo.error.message) ||\n  '';\n\nconst generico = (typeof fallo === 'string' ? fallo : fallo.message) || '';\n\nconst mensajeError =\n  [especifico, generico].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(' | ') ||\n  // Ultimo recurso: volcar lo que haya llegado. n8n ha movido el error de sitio\n  // entre versiones y una celda fea con el objeto entero se puede leer; un\n  // \"Error sin mensaje\" obliga a reproducir el fallo para diagnosticarlo.\n  (() => {\n    for (const obj of [fallo, entrada]) {\n      try {\n        const crudo = JSON.stringify(obj);\n        if (crudo && crudo !== '{}' && crudo !== 'null') {\n          return 'sin campo conocido, crudo: ' + crudo.slice(0, 400);\n        }\n      }\n      catch (e) {\n        // Referencias circulares: se prueba con el siguiente candidato.\n      }\n    }\n    return '';\n  })() ||\n  'Error sin mensaje ni contenido';\n\nconst codigo =\n  (fallo.context && fallo.context.messageCode) ||\n  (fallo.cause && fallo.cause.error && fallo.cause.error.code) ||\n  (fallo.error && fallo.error.code) ||\n  fallo.httpCode ||\n  '';\n\nconst ticket = original.ticket || {};\n\nreturn [{\n  json: {\n    fecha: new Date().toISOString(),\n    session_id: original.session_id || original.waTo || '',\n    telefono: original.waTo || '',\n    nodo: 'Responder por WhatsApp Business',\n    error: codigo ? `[${codigo}] ${mensajeError}` : mensajeError,\n    ticket_id: ticket.ticket_id || '',\n    mensaje_no_entregado: original.output || '',\n  },\n}];\n"
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Describir el fallo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        180
+      ],
+      "notes": "Codigo generado desde src/nodes/03-describir-fallo.js. Recibe la salida de ERROR del envio."
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.MERCAMIO_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Fallos",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "fecha": "={{ $json.fecha }}",
+            "session_id": "={{ $json.session_id }}",
+            "telefono": "={{ $json.telefono }}",
+            "nodo": "={{ $json.nodo }}",
+            "error": "={{ $json.error }}",
+            "ticket_id": "={{ $json.ticket_id }}",
+            "mensaje_no_entregado": "={{ $json.mensaje_no_entregado }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "fecha",
+              "displayName": "fecha",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "session_id",
+              "displayName": "session_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "telefono",
+              "displayName": "telefono",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nodo",
+              "displayName": "nodo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "mensaje_no_entregado",
+              "displayName": "mensaje_no_entregado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Registrar fallo en Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1320,
+        180
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "mercamioSheets01",
+          "name": "MERCAMIO Google Sheets"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Pestana \"Fallos\" de la misma hoja. Guarda el mensaje que no se pudo entregar para poder reenviarlo a mano."
     },
     {
       "parameters": {
@@ -433,6 +563,28 @@
         [
           {
             "node": "Responder por WhatsApp Business",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Responder por WhatsApp Business": {
+      "main": [
+        [
+          {
+            "node": "Describir el fallo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Describir el fallo": {
+      "main": [
+        [
+          {
+            "node": "Registrar fallo en Sheets",
             "type": "main",
             "index": 0
           }

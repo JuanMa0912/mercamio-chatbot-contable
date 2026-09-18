@@ -108,7 +108,8 @@ en [docs/05-auditoria-workflow.md](docs/05-auditoria-workflow.md#deuda-técnica-
 ├── src/
 │   ├── nodes/                  ── FUENTE DE VERDAD DEL CÓDIGO ──
 │   │   ├── 01-motor-conversacional.js  Máquina de estados de las 9 rutas
-│   │   └── 02-recuperar-respuesta.js   Recupera el item tras escribir en Sheets
+│   │   ├── 02-recuperar-respuesta.js   Recupera el item tras escribir en Sheets
+│   │   └── 03-describir-fallo.js       Arma la fila de la pestana "Fallos"
 │   └── ui/chat.html            Chat web de pruebas, servido por n8n
 │
 ├── scripts/
@@ -124,14 +125,16 @@ en [docs/05-auditoria-workflow.md](docs/05-auditoria-workflow.md#deuda-técnica-
 │
 ├── tests/
 │   ├── harness.mjs                   Ejecuta el motor con los globales de n8n simulados
-│   └── motor.test.mjs                33 pruebas: 9 rutas + 12 regresiones
+│   └── motor.test.mjs                46 pruebas: 9 rutas, 12 regresiones y registro de fallos
 │
 ├── workflows/                  ── ARTEFACTOS GENERADOS, no editar a mano ──
 │   ├── ...-v07-whatsapp.json         Producción
 │   ├── ...-v07-simulador.json        Pruebas locales
 │   └── historico/V06-...-sanitizado.json   Referencia de la auditoría
 │
-├── sheets/plantilla-solicitudes.csv  Encabezados de la hoja "Solicitudes"
+├── sheets/
+│   ├── plantilla-solicitudes.csv     Encabezados de la pestana "Solicitudes"
+│   └── plantilla-fallos.csv          Encabezados de la pestana "Fallos"
 └── docs/                             Las siete guías
 ```
 
@@ -189,13 +192,44 @@ completa se valida en 90 ms.
                 │ Recuperar item │         │
                 └─────────┬──────┘         │
                           └────────┬───────┘
-                       ┌───────────▼──────────┐
+                       ┌───────────▼───────────┐
                        │ Responder por WhatsApp│
+                       └───────────┬───────────┘
+                                   │  pasan el envio correcto Y el fallido
+                       ┌───────────▼───────────┐
+                       │ Describir el fallo    │  descarta los correctos
+                       └───────────┬───────────┘
+                                   │  solo si hubo error
+                       ┌───────────▼───────────┐
+                       │ Sheets: pestana Fallos│
                        └───────────────────────┘
 ```
 
 Solo una de las dos ramas se ejecuta por mensaje. En la V06 ambas convergían
 desde la **misma** rama y el usuario recibía la respuesta duplicada.
+
+### Cuando el envío falla
+
+Si el mensaje de respuesta no sale, el proveedor recibe silencio. No hay aviso,
+no hay correo, y el único rastro queda en una lista de ejecuciones de n8n que
+nadie mira. Por eso el fallo se registra en la pestaña **Fallos** de la misma
+hoja de cálculo, que es el sitio que contabilidad sí abre:
+
+| Columna | Para qué |
+|---|---|
+| `fecha`, `session_id`, `telefono` | Quién se quedó sin respuesta y cuándo. |
+| `nodo`, `error` | El motivo de Meta primero, el genérico de n8n detrás. |
+| `ticket_id` | Si ya se había creado, el ticket existe aunque nadie lo recibiera. |
+| `mensaje_no_entregado` | **El texto exacto, para reenviarlo a mano.** |
+
+Un envío correcto no deja fila: el nodo `Describir el fallo` los descarta.
+
+> **Dónde no llega esto.** El nodo de Sheets de las solicitudes lleva
+> `onError: continueRegularOutput` a propósito, para que el usuario reciba su
+> ticket aunque la escritura falle. Ese fallo no se puede registrar en la hoja
+> —es justo la que acaba de fallar—, así que solo queda en el log de la
+> ejecución y en `docker compose logs n8n`. Si eso importa, hace falta un canal
+> de alerta fuera de Sheets.
 
 ### Las 9 rutas
 
@@ -432,7 +466,7 @@ repositorio aparte con licencia permisiva y sin las rutas de negocio.
 
 ## Estado
 
-- ✅ Motor de 9 rutas, 33 pruebas en verde
+- ✅ Motor de 9 rutas, 46 pruebas en verde
 - ✅ Simulador local funcionando de punta a punta en Docker
 - ✅ Estado de conversación con TTL, tope e idempotencia
 - ✅ Los 12 fallos de la V06 corregidos y con prueba de regresión

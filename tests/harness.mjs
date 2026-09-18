@@ -84,3 +84,56 @@ export function nuevaConversacion({ env = {}, bloquearEnv = false, silencioso = 
 
 /** Guion compartido: consentimiento + nombre. Deja la sesion en tipo_usuario. */
 export const PRELUDIO = ['hola', '1', 'Juan Perez'];
+
+// --------------------------------------------------------------------------
+// Nodo "Describir el fallo"
+// --------------------------------------------------------------------------
+// Corre solo cuando el envio por WhatsApp ya ha fallado, asi que en la practica
+// se estrena el dia que hay una incidencia: si tiene un error, se descubre
+// justo cuando mas falta hacia que funcionara. De ahi que se pruebe aparte.
+const CUERPO_FALLO = readFileSync(join(RAIZ, 'src/nodes/03-describir-fallo.js'), 'utf8');
+const ejecutarFallo = new Function('$input', '$', 'console', CUERPO_FALLO);
+
+/**
+ * Ejecuta el nodo que arma la fila de la pestana "Fallos".
+ * @param {object} opciones
+ * @param {object} opciones.error      el objeto de error tal como lo entrega n8n
+ * @param {object} [opciones.motor]    item del motor; null simula que no se puede releer
+ * @param {'real'|'item'|'json'} [opciones.donde]  forma del item que se simula
+ * @returns {object|null} el json de la fila, o null si el nodo no registra nada
+ */
+export function describirFallo({ error, motor = {}, donde = 'real' }) {
+  // 'real' reproduce lo que entrega n8n 1.117 con onError
+  // 'continueRegularOutput', comprobado contra un fallo de verdad:
+  //
+  //   { json: { error: "<mensaje generico>" },   <- una CADENA
+  //     error: { message, description, ... } }   <- el objeto con el motivo
+  //
+  // Es una distincion que importa: el objeto util cuelga del item y dentro de
+  // json solo hay texto generico. Las otras dos formas cubren cada mitad por
+  // separado, para que el nodo siga tolerandolas si n8n las mueve de sitio.
+  const itemFallo =
+    donde === 'item' ? { json: {}, error }
+      : donde === 'json' ? { json: { error } }
+        : { json: { error: (error && error.message) || String(error) }, error };
+  const $input = { first: () => itemFallo };
+  const $ = (nombre) => {
+    if (motor === null) throw new Error(`No node called "${nombre}"`);
+    return { first: () => ({ json: motor }) };
+  };
+  const items = ejecutarFallo($input, $, { log() {}, warn() {}, error() {} });
+  // Devuelve null cuando el nodo decide que no hay nada que registrar.
+  return items.length ? items[0].json : null;
+}
+
+/**
+ * Simula un envio CORRECTO pasando por el mismo nodo: la respuesta de Meta
+ * viaja por la salida normal y no debe generar ninguna fila de fallo.
+ * @returns {object|null} null si el nodo descarta el item, como debe
+ */
+export function describirEnvioCorrecto(respuestaDeMeta = { messaging_product: "whatsapp", messages: [{ id: "wamid.OK" }] }) {
+  const $input = { first: () => ({ json: respuestaDeMeta }) };
+  const $ = () => ({ first: () => ({ json: {} }) });
+  const items = ejecutarFallo($input, $, { log() {}, warn() {}, error() {} });
+  return items.length ? items[0].json : null;
+}
