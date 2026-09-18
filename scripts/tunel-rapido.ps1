@@ -135,7 +135,21 @@ Paso 'Comprobando que la instancia esta protegida'
 $previo = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    $duenos = docker compose exec -T postgres psql -U n8n -d n8n -t -A -c "select count(*) from ""user"" where email is not null and password is not null;"
+    # OJO con las comillas. `user` es palabra reservada en PostgreSQL, asi que
+    # la tabla EXIGE ir entre comillas dobles. Pero PowerShell 5.1 se COME las
+    # comillas dobles al pasar un argumento a un ejecutable nativo: escribir
+    # ""user"" aqui hace que psql reciba `from user` a secas y responda
+    # "column email does not exist".
+    #
+    # Eso convertia esta comprobacion de seguridad en un bloqueo permanente:
+    # decia "no hay cuenta de propietario" aunque la hubiera, y el tunel no
+    # levantaba nunca. El riesgo real es que alguien lo diagnostique como un
+    # falso positivo y quite la comprobacion entera.
+    #
+    # La barra invertida es la forma de pasar una comilla doble LITERAL a un
+    # nativo desde PowerShell. Verificado: con \" devuelve el conteo correcto.
+    $sqlDuenos = 'select count(*) from \"user\" where email is not null and password is not null;'
+    $duenos = docker compose exec -T postgres psql -U n8n -d n8n -t -A -c $sqlDuenos
 }
 finally { $ErrorActionPreference = $previo }
 $n = 0

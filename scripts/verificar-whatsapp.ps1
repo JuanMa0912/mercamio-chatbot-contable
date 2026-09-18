@@ -323,7 +323,7 @@ Titulo '3. Numeros de telefono'
 
 $idsEncontrados = @()
 if ($WabaId) {
-    $campos = 'id,display_phone_number,verified_name,code_verification_status,quality_rating,platform_type,name_status,is_official_business_account'
+    $campos = 'id,display_phone_number,verified_name,code_verification_status,quality_rating,platform_type,name_status,is_official_business_account,status'
     $nums = Llamar "/$WabaId/phone_numbers" @{ fields = $campos }
     if ($nums.Ok -and $nums.Datos.data) {
         $i = 0
@@ -336,17 +336,41 @@ if ($WabaId) {
             Dato 'nombre visible' "$($p.verified_name)"
             Dato 'estado del nombre' "$($p.name_status)"
             Dato 'verificacion' "$($p.code_verification_status)"
+            Dato 'operativo (status)' "$($p.status)"
             Dato 'calidad' "$($p.quality_rating)"
             Dato 'plataforma' "$($p.platform_type)"
             $idsEncontrados += $p.id
 
-            if ("$($p.code_verification_status)" -ne 'VERIFIED') {
-                Mal 'El numero NO esta verificado: no puede enviar ni recibir.'
-                Mal 'Completa la verificacion por SMS o llamada (docs/09, paso 5).'
-                $problemas += "numero $($p.display_phone_number) sin verificar"
+            # Quien manda es `status`, no `code_verification_status`.
+            #
+            # Un NUMERO DE PRUEBA de Meta figura SIEMPRE como NOT_VERIFIED: lo
+            # provisiona Meta y no hay ningun SMS que confirmar. Aun asi envia y
+            # recibe con normalidad hacia los destinatarios de la lista blanca.
+            # La version anterior de esta comprobacion lo declaraba roto y
+            # mandaba a "completar la verificacion por SMS", un paso que para un
+            # numero de prueba no existe y no se puede completar.
+            #
+            # El campo que de verdad dice si el numero funciona es `status`:
+            # CONNECTED = operativo. Un numero propio a medio registrar aparece
+            # como PENDING o FLAGGED, y ahi si es un fallo real.
+            $verificado = "$($p.code_verification_status)" -eq 'VERIFIED'
+            $conectado = "$($p.status)" -eq 'CONNECTED'
+
+            if ($conectado -and $verificado) {
+                Bien 'Numero verificado y conectado.'
+            }
+            elseif ($conectado) {
+                Bien 'Numero CONECTADO y operativo.'
+                Ojo 'Figura como NOT_VERIFIED, que es lo normal en un numero de'
+                Ojo 'prueba de Meta: no hay SMS que verificar. Envia y recibe solo'
+                Ojo 'hacia los destinatarios registrados en la lista de prueba.'
             }
             else {
-                Bien 'Numero verificado.'
+                Mal "El numero no esta operativo (status = $($p.status))."
+                if (-not $verificado) {
+                    Mal 'Completa la verificacion por SMS o llamada (docs/09, paso 5).'
+                }
+                $problemas += "numero $($p.display_phone_number) no operativo (status $($p.status))"
             }
 
             if ("$($p.name_status)" -eq 'PENDING_REVIEW') {
@@ -467,15 +491,36 @@ else {
                 $campos = @($s.fields | ForEach-Object { $_.name })
                 Dato 'campos' $(if ($campos.Count) { $campos -join ', ' } else { '(ninguno)' })
             }
-            Ojo 'La app YA tiene una suscripcion de WhatsApp.'
-            Write-Host ''
-            Write-Host '      Si esa callback_url no es la de tu n8n, la activacion del' -ForegroundColor Yellow
-            Write-Host '      workflow FALLARA. Hay dos salidas:' -ForegroundColor Yellow
-            Write-Host '        a) Borrarla: Meta > WhatsApp > Configuration > Webhook' -ForegroundColor DarkGray
-            Write-Host '        b) Usar OTRA app de Facebook para este bot' -ForegroundColor DarkGray
-            Write-Host ''
-            Write-Host '      Meta solo admite UN WhatsApp Trigger por app.' -ForegroundColor DarkGray
-            $problemas += 'la app ya tiene webhook registrado'
+            # Una suscripcion previa solo es un problema si apunta a OTRO sitio.
+            # Cuando ya se activo el workflow, la que hay es la que n8n registro,
+            # y marcarla como fallo hacia que el diagnostico terminara en "HAY
+            # QUE RESOLVER" con el bot funcionando perfectamente. Peor aun: la
+            # salida sugeria borrarla, que es exactamente lo que NO hay que
+            # hacer. Se compara contra WEBHOOK_URL de .env, que es la URL con la
+            # que n8n se registro.
+            $urlPropia = (Leer-Env 'WEBHOOK_URL').TrimEnd('/')
+            $propias = @($wa | Where-Object { $urlPropia -and "$($_.callback_url)".StartsWith($urlPropia, [StringComparison]::OrdinalIgnoreCase) })
+
+            if ($propias.Count -eq $wa.Count -and $wa.Count -gt 0) {
+                Bien 'La suscripcion apunta a tu propio n8n: es la que registro el workflow.'
+                $inactivas = @($wa | Where-Object { -not $_.active })
+                if ($inactivas.Count -gt 0) {
+                    Ojo 'Pero figura como INACTIVA en Meta: no va a entregar mensajes.'
+                    $problemas += 'suscripcion de webhook inactiva en Meta'
+                }
+            }
+            else {
+                Ojo 'La app ya tiene una suscripcion de WhatsApp que NO es la tuya.'
+                Write-Host ''
+                Write-Host "      La tuya seria:  $urlPropia/..." -ForegroundColor DarkGray
+                Write-Host '      Mientras esa siga puesta, la activacion del workflow' -ForegroundColor Yellow
+                Write-Host '      FALLARA. Hay dos salidas:' -ForegroundColor Yellow
+                Write-Host '        a) Borrarla: Meta > WhatsApp > Configuration > Webhook' -ForegroundColor DarkGray
+                Write-Host '        b) Usar OTRA app de Facebook para este bot' -ForegroundColor DarkGray
+                Write-Host ''
+                Write-Host '      Meta solo admite UN WhatsApp Trigger por app.' -ForegroundColor DarkGray
+                $problemas += 'la app tiene un webhook registrado que no es el tuyo'
+            }
         }
     }
 }
