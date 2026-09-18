@@ -168,6 +168,7 @@ Write-Host " Graph API $Version"
 Write-Host '======================================================================'
 
 $problemas = @()
+$tokenInservible = $false
 
 # ------------------------------------------------------- 1. el token sirve?
 Titulo '1. Token'
@@ -199,6 +200,25 @@ if ($dbg.Ok -and $dbg.Datos.data) {
         $problemas += 'token invalido'
     }
 
+    # Con varias apps en la cuenta, "el token" no identifica nada por si solo.
+    # Comparar este app_id con el WHATSAPP_APP_ID de .env evita el error de
+    # mezclar el token de una app con el App Secret de otra: la activacion
+    # fallaria y la firma de los mensajes nunca cuadraria.
+    $appIdEnv = Leer-Env 'WHATSAPP_APP_ID'
+    if ($appIdEnv) {
+        if ("$($d.app_id)" -eq $appIdEnv) {
+            Bien "El token pertenece a la misma app que WHATSAPP_APP_ID ($appIdEnv)."
+        }
+        else {
+            Mal "DESAJUSTE: el token es de la app $($d.app_id), pero .env dice $appIdEnv."
+            Mal 'Token y App ID/Secret deben ser de la MISMA app de Facebook.'
+            $problemas += 'token y APP_ID de apps distintas'
+        }
+    }
+    else {
+        Ojo "El token pertenece a la app $($d.app_id). Ese es el App ID que va en .env."
+    }
+
     $ambitos = @($d.scopes)
     Dato 'permisos' $(if ($ambitos.Count) { $ambitos -join ', ' } else { '(ninguno)' })
     foreach ($nec in @('whatsapp_business_messaging', 'whatsapp_business_management')) {
@@ -224,12 +244,22 @@ else {
         Write-Host '   Causas mas frecuentes:' -ForegroundColor DarkGray
         Write-Host '     - Es el token temporal y ya pasaron 24 h.' -ForegroundColor DarkGray
         Write-Host '     - Se copio incompleto (son varios cientos de caracteres).' -ForegroundColor DarkGray
+        Write-Host '     - Es el App Secret o el App ID en vez del access token.' -ForegroundColor DarkGray
         Write-Host "     - La version $Version de la Graph API ya no existe: prueba -Version v24.0" -ForegroundColor DarkGray
-        exit 1
+        $problemas += 'token invalido'
+        # No se aborta: la comprobacion de la suscripcion (seccion 4) usa un
+        # token de APP y no depende de este. Mejor informar de todo lo que
+        # falla de una vez que obligar a repetir el diagnostico.
+        $tokenInservible = $true
     }
 }
 
 # --------------------------------------------- 2. que cuenta de WhatsApp?
+if ($tokenInservible) {
+    Titulo '2 y 3. Cuenta y numeros'
+    Ojo 'Se omiten: necesitan un token valido. Corrige el token y repite.'
+}
+else {
 Titulo '2. Cuenta de WhatsApp Business (WABA)'
 
 if (-not $WabaId) {
@@ -322,9 +352,86 @@ if ($phoneIdEnv) {
     }
 }
 
-# --------------------------------------------------- 4. envio de prueba
+}
+
+# ------------------------------- 4. suscripcion de webhook de la app
+# Esta comprobacion existe porque el WhatsApp Trigger de n8n registra el
+# webhook EL MISMO al activarse, y se niega si la app ya tiene una suscripcion
+# con otra callback_url:
+#
+#   "The WhatsApp App ID <id> already has a webhook subscription.
+#    Delete it or use another App before executing the trigger."
+#
+# Es el fallo tipico cuando ya hubo intentos previos, otra herramienta o una
+# configuracion manual en el panel de Meta.
+Titulo '4. Suscripcion de webhook de la app'
+
+$appId = Leer-Env 'WHATSAPP_APP_ID'
+$appSecret = Leer-Env 'WHATSAPP_APP_SECRET'
+
+if (-not $appId -or -not $appSecret) {
+    Ojo 'Sin WHATSAPP_APP_ID y WHATSAPP_APP_SECRET no se puede comprobar.'
+    Ojo 'Estan en Meta > Configuracion > Basica. Anadelos a .env.'
+}
+else {
+    Dato 'App ID' $appId
+
+    # Las suscripciones se consultan con un token de APP (app_id|app_secret),
+    # no con el token de usuario del sistema.
+    $tokenApp = "$appId|$appSecret"
+    $urlSubs = "$GRAFO/$appId/subscriptions?access_token=" + [Uri]::EscapeDataString($tokenApp)
+
+    $subs = $null
+    $errSubs = ''
+    try {
+        $subs = Invoke-RestMethod -Uri $urlSubs -Method Get -TimeoutSec 30
+    }
+    catch {
+        $errSubs = $_.Exception.Message
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            try {
+                $j = $_.ErrorDetails.Message | ConvertFrom-Json
+                if ($j.error) { $errSubs = "[#$($j.error.code)] $($j.error.message)" }
+            }
+            catch { }
+        }
+    }
+
+    if ($errSubs) {
+        Mal "No se pudo consultar: $errSubs"
+        Write-Host '      Si dice "Invalid OAuth access token", el App Secret no' -ForegroundColor DarkGray
+        Write-Host '      corresponde al App ID. Es el mismo error que hace que el bot' -ForegroundColor DarkGray
+        Write-Host '      descarte TODOS los mensajes en silencio por firma invalida.' -ForegroundColor DarkGray
+        $problemas += 'App ID/Secret no verificables'
+    }
+    else {
+        $wa = @($subs.data | Where-Object { $_.object -eq 'whatsapp_business_account' })
+        if ($wa.Count -eq 0) {
+            Bien 'La app no tiene ninguna suscripcion de WhatsApp: n8n podra crearla.'
+        }
+        else {
+            foreach ($s in $wa) {
+                Dato 'callback_url' "$($s.callback_url)"
+                Dato 'activa' "$($s.active)"
+                $campos = @($s.fields | ForEach-Object { $_.name })
+                Dato 'campos' $(if ($campos.Count) { $campos -join ', ' } else { '(ninguno)' })
+            }
+            Ojo 'La app YA tiene una suscripcion de WhatsApp.'
+            Write-Host ''
+            Write-Host '      Si esa callback_url no es la de tu n8n, la activacion del' -ForegroundColor Yellow
+            Write-Host '      workflow FALLARA. Hay dos salidas:' -ForegroundColor Yellow
+            Write-Host '        a) Borrarla: Meta > WhatsApp > Configuration > Webhook' -ForegroundColor DarkGray
+            Write-Host '        b) Usar OTRA app de Facebook para este bot' -ForegroundColor DarkGray
+            Write-Host ''
+            Write-Host '      Meta solo admite UN WhatsApp Trigger por app.' -ForegroundColor DarkGray
+            $problemas += 'la app ya tiene webhook registrado'
+        }
+    }
+}
+
+# --------------------------------------------------- 5. envio de prueba
 if ($EnviarA) {
-    Titulo '4. Envio de prueba'
+    Titulo '5. Envio de prueba'
 
     $idEnvio = $phoneIdEnv
     if (-not $idEnvio -and $idsEncontrados.Count -eq 1) { $idEnvio = $idsEncontrados[0] }
