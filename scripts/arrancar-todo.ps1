@@ -298,19 +298,50 @@ if ($appId -and $appSecret) {
 }
 Registrar ("    callback en Meta: {0}" -f $(if ($urlMeta) { $urlMeta } else { '(ninguna)' }))
 
-$cuadran = $urlTunel -and $urlEnv -and $urlMeta -and
-           ($urlEnv -eq $urlTunel) -and
-           $urlMeta.StartsWith($urlTunel, [StringComparison]::OrdinalIgnoreCase)
+$coinciden = $urlTunel -and $urlEnv -and $urlMeta -and
+             ($urlEnv -eq $urlTunel) -and
+             $urlMeta.StartsWith($urlTunel, [StringComparison]::OrdinalIgnoreCase)
 
-if ($cuadran) {
-    Bien 'Las tres coinciden: no hay nada que hacer.'
+# Que las tres cadenas coincidan NO significa que el bot este accesible.
+#
+# Cloudflare puede matar un quick tunnel cuando quiera, y cuando lo hace el
+# contenedor sigue "Up" reintentando contra un tunel que ya no existe:
+#
+#   ERR Register tunnel error from server side error="Unauthorized: Tunnel not found"
+#
+# La URL sigue siendo la misma en el contenedor, en .env y en Meta, asi que una
+# comprobacion de consistencia la da por buena. Pero el DNS ya no resuelve y
+# Meta no puede entregar nada. Paso de verdad tras tres horas de tunel.
+#
+# La unica comprobacion que vale es pedir la URL desde fuera y ver si responde.
+$alcanzable = $false
+if ($urlTunel) {
+    # PowerShell 5.1 negocia TLS 1.0/1.1 segun el sistema y Cloudflare corta.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    try {
+        $resp = Invoke-WebRequest -Uri "$urlTunel/healthz" -TimeoutSec 25 -UseBasicParsing
+        $alcanzable = ($resp.StatusCode -eq 200)
+    }
+    catch { $alcanzable = $false }
+    Registrar ("    responde desde internet: {0}" -f $(if ($alcanzable) { 'si' } else { 'NO' }))
+}
+
+if ($coinciden -and $alcanzable) {
+    Bien 'Las tres coinciden y la URL responde desde internet.'
     exit 0
 }
 
 if (-not $urlTunel)                { Ojo 'No hay tunel levantado.' }
 elseif ($urlEnv -ne $urlTunel)     { Ojo 'El tunel cambio de URL y .env se quedo con la anterior.' }
 elseif (-not $urlMeta)             { Ojo 'Meta no tiene ninguna suscripcion registrada.' }
-else                               { Ojo 'Meta apunta a una URL distinta de la del tunel.' }
+elseif (-not $urlMeta.StartsWith($urlTunel, [StringComparison]::OrdinalIgnoreCase)) {
+    Ojo 'Meta apunta a una URL distinta de la del tunel.'
+}
+else {
+    Ojo 'Las tres URL coinciden pero la direccion NO responde desde internet.'
+    Ojo 'Cloudflare ha tumbado el tunel; el contenedor sigue arriba reintentando'
+    Ojo 'contra un tunel que ya no existe. Se rehace desde cero.'
+}
 
 if ($SoloComprobar) {
     Registrar ''
