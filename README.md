@@ -115,7 +115,12 @@ en [docs/05-auditoria-workflow.md](docs/05-auditoria-workflow.md#deuda-técnica-
 │   ├── build-workflow.mjs            Genera los JSON inyectando src/nodes/*.js
 │   ├── importar-workflows.ps1        Prueba + genera + importa en n8n
 │   ├── simular-conversacion.ps1      Conversa con el bot sin WhatsApp
-│   └── verificar-whatsapp.ps1        Diagnostica el token y los números en Meta
+│   ├── crear-credencial-sheets.ps1   Credencial de Google desde la clave de la cuenta de servicio
+│   ├── crear-credenciales-whatsapp.ps1  Las dos credenciales de Meta, desde .env
+│   ├── verificar-whatsapp.ps1        Diagnostica el token y los números en Meta
+│   ├── tunel-rapido.ps1              Publica n8n en una URL https temporal
+│   ├── activar-whatsapp.ps1          Activa el workflow y registra el webhook en Meta
+│   └── arrancar-todo.ps1             Rehace el túnel y el webhook cuando la URL cambia
 │
 ├── tests/
 │   ├── harness.mjs                   Ejecuta el motor con los globales de n8n simulados
@@ -237,10 +242,53 @@ npm run build                          # regenerar los JSON
 powershell -File scripts/importar-workflows.ps1
 powershell -File scripts/simular-conversacion.ps1 -Guion interactivo
 powershell -File scripts/verificar-whatsapp.ps1     # diagnóstico de Meta
+powershell -File scripts/arrancar-todo.ps1 -SoloComprobar   # ¿cuadran túnel, .env y Meta?
+powershell -File scripts/arrancar-todo.ps1                  # y si no, lo arregla
 
 docker compose --profile tools up -d   # Adminer en http://localhost:8080
 docker compose --profile tunnel up -d  # túnel de Cloudflare
 ```
+
+### El túnel rápido cambia de URL, y eso rompe WhatsApp en silencio
+
+El túnel de [`tunel-rapido.ps1`](scripts/tunel-rapido.ps1) usa un *quick tunnel*
+de Cloudflare: cómodo porque no necesita cuenta ni dominio, pero entrega un
+**hostname aleatorio distinto en cada arranque**. El contenedor lleva
+`--restart unless-stopped`, así que tras reiniciar el equipo vuelve solo — con
+otra URL.
+
+El estado resultante es el peor posible, porque parece correcto:
+
+| | |
+|---|---|
+| Contenedor del túnel | arriba |
+| n8n | healthy |
+| Workflow | activo |
+| URL registrada en Meta | apuntando a un host que ya no existe |
+
+Un proveedor escribe, Meta entrega a la URL vieja, nadie responde, y no hay
+error en ningún sitio. [`arrancar-todo.ps1`](scripts/arrancar-todo.ps1) compara
+las tres cosas que tienen que coincidir —la URL viva del túnel, `WEBHOOK_URL`
+en `.env` y la `callback_url` registrada en Meta— y si alguna se desincronizó,
+rehace el túnel y vuelve a registrar el webhook. Si coinciden no toca nada, así
+que es seguro ejecutarlo a menudo.
+
+```powershell
+powershell -File scripts/arrancar-todo.ps1 -Instalar     # al iniciar sesión + cada 10 min
+powershell -File scripts/arrancar-todo.ps1 -Desinstalar
+```
+
+`-Instalar` intenta crear una tarea programada y, si no hay permisos de
+administrador, cae a un acceso directo en la carpeta de Inicio. La tarea es
+mejor: funciona aunque nadie inicie sesión. El registro queda en
+`logs/arrancar-todo.log`.
+
+> **Esto es un parche, no el destino.** Cloudflare dice explícitamente que los
+> quick tunnels no son para producción y puede cortarlos sin aviso, y en cada
+> arranque hay dos o tres minutos de silencio mientras se rehace el registro.
+> Lo correcto es un túnel con nombre y dominio propio
+> ([03](docs/03-webhook-whatsapp-tunel.md)) o sacar el bot del PC de escritorio
+> ([10](docs/10-costos-reales.md)).
 
 > `docker compose down -v` **borra los volúmenes**: se pierden los workflows,
 > las credenciales y el historial. Solo para empezar de cero a propósito.
