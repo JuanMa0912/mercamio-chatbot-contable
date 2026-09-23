@@ -222,8 +222,25 @@ Bien 'n8n recreado con la URL publica.'
 
 # ------------------------------------------------------- 4. comprobar
 Paso 'Comprobando el acceso desde fuera'
+
+# Hay que vaciar la cache DNS del cliente de Windows en CADA intento, y esto no
+# es una precaucion teorica.
+#
+# El hostname acaba de crearse. Si se consulta antes de que Cloudflare lo haya
+# publicado, Windows cachea la respuesta NEGATIVA y se la queda durante todo el
+# TTL. A partir de ahi, todo lo que corra en esta maquina cree que el dominio no
+# existe —incluida la comprobacion de arrancar-todo.ps1— aunque el tunel este
+# perfectamente vivo. El sintoma engana: nslookup resuelve (consulta al servidor
+# saltandose la cache) mientras curl e Invoke-WebRequest fallan con "no se puede
+# resolver el nombre remoto".
+#
+# La consecuencia real es peor que un aviso perdido: el vigilante concluye "no
+# responde desde internet", rehace el tunel, vuelve a consultar demasiado
+# pronto, vuelve a envenenar la cache, y entra en un bucle que cada diez minutos
+# cambia la URL y reregistra el webhook en Meta.
 $ok = $false
 foreach ($i in 1..10) {
+    try { Clear-DnsClientCache } catch { }
     try {
         if ((Invoke-RestMethod -Uri "$url/healthz" -TimeoutSec 10).status -eq 'ok') { $ok = $true; break }
     }

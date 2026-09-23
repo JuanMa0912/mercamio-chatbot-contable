@@ -318,11 +318,26 @@ $alcanzable = $false
 if ($urlTunel) {
     # PowerShell 5.1 negocia TLS 1.0/1.1 segun el sistema y Cloudflare corta.
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    try {
-        $resp = Invoke-WebRequest -Uri "$urlTunel/healthz" -TimeoutSec 25 -UseBasicParsing
-        $alcanzable = ($resp.StatusCode -eq 200)
+
+    # Tres intentos, vaciando la cache DNS del cliente antes de cada uno.
+    #
+    # Si alguien consulto el hostname justo despues de crearlo, Windows tiene
+    # cacheada una respuesta NEGATIVA y este proceso cree que el dominio no
+    # existe aunque el tunel funcione. Sin el vaciado, esa cache basta para que
+    # el vigilante concluya "no responde", rehaga el tunel, envenene la cache de
+    # nuevo con la URL nueva y entre en un bucle: cada diez minutos una URL
+    # distinta y un reregistro mas en Meta. Es peor que no vigilar nada.
+    #
+    # Un fallo solo cuenta como tal si se repite con la cache limpia.
+    foreach ($intento in 1..3) {
+        try { Clear-DnsClientCache } catch { }
+        try {
+            $resp = Invoke-WebRequest -Uri "$urlTunel/healthz" -TimeoutSec 25 -UseBasicParsing
+            if ($resp.StatusCode -eq 200) { $alcanzable = $true; break }
+        }
+        catch { }
+        if ($intento -lt 3) { Start-Sleep -Seconds 5 }
     }
-    catch { $alcanzable = $false }
     Registrar ("    responde desde internet: {0}" -f $(if ($alcanzable) { 'si' } else { 'NO' }))
 }
 
