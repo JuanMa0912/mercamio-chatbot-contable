@@ -215,6 +215,26 @@ if ($Instalar -or $Desinstalar) {
 # duerme y repite. Se relanza a si mismo como proceso normal, asi que basta
 # cerrar la ventana (o cerrar sesion) para pararlo.
 if ($Vigilar) {
+    # Cerrojo para que no haya dos vigilantes a la vez.
+    #
+    # El acceso directo de la carpeta de Inicio se dispara en cada inicio de
+    # sesion y no comprueba si ya hay uno corriendo, asi que es facil acabar con
+    # varios. No es cosmetico: dos vigilantes pueden decidir rehacer el tunel al
+    # mismo tiempo, y como activar-whatsapp.ps1 BORRA la suscripcion de Meta
+    # antes de recrearla, el borrado de uno puede caer despues de la creacion
+    # del otro y dejar la app sin ninguna suscripcion. Paso de verdad: el bot se
+    # quedo sin recibir mensajes con todo lo demas aparentemente correcto.
+    #
+    # La tarea programada ya trae -MultipleInstances IgnoreNew, pero esta
+    # variante no tiene equivalente, asi que el cerrojo va en el script. Un mutex
+    # con nombre se libera solo si el proceso muere, cosa que un archivo de
+    # bloqueo no garantiza.
+    $cerrojo = New-Object Threading.Mutex($false, 'Global\MercamioVigilanteTunel')
+    if (-not $cerrojo.WaitOne(0)) {
+        Registrar 'Ya hay otro vigilante corriendo. Este se cierra.' 'Yellow'
+        exit 0
+    }
+
     Registrar 'Vigilancia iniciada: se comprueba cada 10 minutos.' 'Cyan'
     while ($true) {
         try {
